@@ -1,0 +1,19 @@
+[Unit]
+Description=ServerMon metrics collector (one cycle)
+Documentation=https://github.com/heldmar/servermon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__USER__
+Group=__USER__
+Environment=SERVERMON_CONFIG=/etc/servermon/config.yml
+ExecStart=__PREFIX__/venv/bin/python -m servermon.collect
+WorkingDirectory=__PREFIX__
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=__DB_DIR__

@@ -1,0 +1,14 @@
+[Unit]
+Description=Run ServerMon collector every __INTERVAL__ minutes
+Documentation=https://github.com/heldmar/servermon
+
+[Timer]
+# First run shortly after boot, then on a fixed cadence.
+OnBootSec=1min
+OnUnitActiveSec=__INTERVAL__min
+AccuracySec=15s
+Persistent=true
+Unit=servermon-collector.service
+
+[Install]
+WantedBy=timers.target

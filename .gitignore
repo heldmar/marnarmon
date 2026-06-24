@@ -1,0 +1,27 @@
+# --- ServerMon host repo (public, Apache-2.0) ---
+# The dashboard is a SEPARATE, private repo. Never commit it here.
+dashboard/
+
+# Agent/Cowork memory must never be committed (it lives outside the repo, but
+# guard against an accidental copy/export into the project).
+MEMORY.md
+memory/
+.claude/memory/
+**/memory/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Local runtime artifacts
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# OS / editor
+.DS_Store
+*.swp

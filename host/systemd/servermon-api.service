@@ -1,0 +1,24 @@
+[Unit]
+Description=ServerMon metrics API (FastAPI/uvicorn)
+Documentation=https://github.com/heldmar/servermon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+Environment=SERVERMON_CONFIG=/etc/servermon/config.yml
+WorkingDirectory=__PREFIX__
+ExecStart=__PREFIX__/venv/bin/uvicorn servermon.api:app --host __API_HOST__ --port __API_PORT__
+Restart=on-failure
+RestartSec=5
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=__DB_DIR__
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,36 @@
+# ServerMon host configuration
+# Copied to /etc/servermon/config.yml by install.sh.
+# All values can be edited after install; restart the timer/service to apply.
+
+host:
+  # Friendly name reported by the API. Empty = system hostname.
+  name: ""
+
+collection:
+  # How often the collector runs. The installer writes a matching systemd timer.
+  interval_minutes: 5
+  # Rolling history retention. Older rows are pruned on each collection cycle.
+  retention_days: 30
+
+database:
+  path: /var/lib/servermon/metrics.db
+
+network:
+  # Interfaces to include in network in/out totals.
+  # Empty list = auto-detect (all up interfaces except loopback and
+  # common virtual ones: docker*, veth*, br-*, lo).
+  interfaces: []
+
+disks:
+  # Mount points to track. Populated by the installer from /etc/fstab.
+  # Each entry must be a mount point that exists on the system.
+  - /
+
+api:
+  host: "0.0.0.0"      # 0.0.0.0 = reachable on the LAN; 127.0.0.1 = local only
+  port: 8787
+  # Optional bearer token. Empty = no authentication.
+  # When set, clients must send: Authorization: Bearer <token>
+  token: ""
+  # Default window (minutes) for /metrics/history when none is requested.
+  default_history_minutes: 1440
