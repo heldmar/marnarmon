@@ -9,7 +9,7 @@ Optional bearer-token auth: when api.token is set in config, all /metrics and
 /health (except the open root) require  Authorization: Bearer <token>.
 CORS is open so the dashboard container can call it from a browser.
 
-Run:  uvicorn servermon.api:app --host 0.0.0.0 --port 8787
+Run:  uvicorn marnarmon.api:app --host 0.0.0.0 --port 8787
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from .config import load_config
 
 cfg = load_config()
 
-app = FastAPI(title="ServerMon", version=__version__)
+app = FastAPI(title="MarNarMon", version=__version__)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -66,7 +66,7 @@ def _parse_window(window: Optional[str], minutes: Optional[int]) -> int:
 
 @app.get("/")
 def root() -> dict:
-    return {"service": "servermon", "version": __version__, "host": cfg.host_name}
+    return {"service": "marnarmon", "version": __version__, "host": cfg.host_name}
 
 
 @app.get("/health")

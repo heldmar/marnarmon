@@ -1,7 +1,7 @@
-"""Configuration loading and validation for ServerMon.
+"""Configuration loading and validation for MarNarMon.
 
-Config is a single YAML file (default /etc/servermon/config.yml). The path can
-be overridden with the SERVERMON_CONFIG environment variable so the collector,
+Config is a single YAML file (default /etc/marnarmon/config.yml). The path can
+be overridden with the MARNARMON_CONFIG environment variable so the collector,
 API and tests can all point at the same place.
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import List
 
 import yaml
 
-DEFAULT_CONFIG_PATH = "/etc/servermon/config.yml"
+DEFAULT_CONFIG_PATH = "/etc/marnarmon/config.yml"
 
 
 @dataclass
@@ -33,7 +33,7 @@ class Config:
 
 
 def config_path() -> str:
-    return os.environ.get("SERVERMON_CONFIG", DEFAULT_CONFIG_PATH)
+    return os.environ.get("MARNARMON_CONFIG", DEFAULT_CONFIG_PATH)
 
 
 def load_config(path: str | None = None) -> Config:
@@ -61,7 +61,7 @@ def load_config(path: str | None = None) -> Config:
     if retention < 1:
         raise ValueError("collection.retention_days must be >= 1")
 
-    db_path = database.get("path") or "/var/lib/servermon/metrics.db"
+    db_path = database.get("path") or "/var/lib/marnarmon/metrics.db"
 
     interfaces = network.get("interfaces") or []
     if not isinstance(interfaces, list):

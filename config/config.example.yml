@@ -1,5 +1,5 @@
-# ServerMon host configuration
-# Copied to /etc/servermon/config.yml by install.sh.
+# MarNarMon host configuration
+# Copied to /etc/marnarmon/config.yml by install.sh.
 # All values can be edited after install; restart the timer/service to apply.
 
 host:
@@ -13,7 +13,7 @@ collection:
   retention_days: 30
 
 database:
-  path: /var/lib/servermon/metrics.db
+  path: /var/lib/marnarmon/metrics.db
 
 network:
   # Interfaces to include in network in/out totals.

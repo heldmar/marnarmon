@@ -1,6 +1,6 @@
 [Unit]
-Description=ServerMon metrics API (FastAPI/uvicorn)
-Documentation=https://github.com/heldmar/servermon
+Description=MarNarMon metrics API (FastAPI/uvicorn)
+Documentation=https://github.com/heldmar/marnarmon
 After=network-online.target
 Wants=network-online.target
 
@@ -8,9 +8,9 @@ Wants=network-online.target
 Type=simple
 User=__USER__
 Group=__USER__
-Environment=SERVERMON_CONFIG=/etc/servermon/config.yml
+Environment=MARNARMON_CONFIG=/etc/marnarmon/config.yml
 WorkingDirectory=__PREFIX__
-ExecStart=__PREFIX__/venv/bin/uvicorn servermon.api:app --host __API_HOST__ --port __API_PORT__
+ExecStart=__PREFIX__/venv/bin/uvicorn marnarmon.api:app --host __API_HOST__ --port __API_PORT__
 Restart=on-failure
 RestartSec=5
 # Hardening

@@ -1,4 +1,4 @@
-"""ServerMon host agent: lightweight Linux metrics collector + API.
+"""MarNarMon host agent: lightweight Linux metrics collector + API.
 
 Reads CPU, RAM, network and disk usage directly from /proc and statvfs
 (no psutil), stores rolling history in SQLite, and serves it over a small

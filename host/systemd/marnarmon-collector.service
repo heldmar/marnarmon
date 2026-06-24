@@ -1,6 +1,6 @@
 [Unit]
-Description=ServerMon metrics collector (one cycle)
-Documentation=https://github.com/heldmar/servermon
+Description=MarNarMon metrics collector (one cycle)
+Documentation=https://github.com/heldmar/marnarmon
 After=network-online.target
 Wants=network-online.target
 
@@ -8,8 +8,8 @@ Wants=network-online.target
 Type=oneshot
 User=__USER__
 Group=__USER__
-Environment=SERVERMON_CONFIG=/etc/servermon/config.yml
-ExecStart=__PREFIX__/venv/bin/python -m servermon.collect
+Environment=MARNARMON_CONFIG=/etc/marnarmon/config.yml
+ExecStart=__PREFIX__/venv/bin/python -m marnarmon.collect
 WorkingDirectory=__PREFIX__
 # Hardening
 NoNewPrivileges=true

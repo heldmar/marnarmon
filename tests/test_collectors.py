@@ -12,8 +12,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "host"))
 
-from servermon import collectors as c  # noqa: E402
-from servermon import db as sdb  # noqa: E402
+from marnarmon import collectors as c  # noqa: E402
+from marnarmon import db as sdb  # noqa: E402
 
 PROC_STAT = """cpu  100 0 50 800 50 0 0 0 0 0
 cpu0 50 0 25 400 25 0 0 0 0 0
@@ -88,7 +88,7 @@ def test_disk_live():
     check("read_disk missing mount -> None", c.read_disk("/no/such/mount/xyz") is None)
 
 
-def test_db_roundtrip(tmp_path="/tmp/servermon_test.db"):
+def test_db_roundtrip(tmp_path="/tmp/marnarmon_test.db"):
     if os.path.exists(tmp_path):
         os.remove(tmp_path)
     conn = sdb.connect(tmp_path)
@@ -122,7 +122,7 @@ def test_db_roundtrip(tmp_path="/tmp/servermon_test.db"):
 
 def main():
     tests = [test_cpu, test_mem, test_net, test_loadavg, test_disk_live, test_db_roundtrip]
-    print("Running ServerMon collector tests...")
+    print("Running MarNarMon collector tests...")
     for t in tests:
         print(f"{t.__name__}:")
         t()

@@ -1,4 +1,4 @@
-# ServerMon API contract (v1)
+# MarNarMon API contract (v1)
 
 This is the stable boundary between the **host agent** (free, this repo) and the
 **dashboard** (commercial, separate repo). Both sides build against this spec.
@@ -22,7 +22,7 @@ major version and a new path prefix.
 Open (no auth). Service banner.
 
 ```json
-{ "service": "servermon", "version": "0.1.0", "host": "pi-server" }
+{ "service": "marnarmon", "version": "0.1.0", "host": "pi-server" }
 ```
 
 ## `GET /health`

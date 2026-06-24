@@ -1,4 +1,4 @@
-# ServerMon — host agent (project guide)
+# MarNarMon — host agent (project guide)
 
 Context for Claude Code / contributors working in this repo. This is the
 **public, open-source host agent** (Apache-2.0). The dashboard is a separate
@@ -19,15 +19,15 @@ them — see `API.md`.
 ```
 install.sh / uninstall.sh   interactive installer / remover
 config/config.example.yml   reference config
-host/servermon/             Python package: collectors, db, api, collect, config
+host/marnarmon/             Python package: collectors, db, api, collect, config
 host/systemd/               unit templates (placeholders filled at install)
 tests/test_collectors.py    parser + DB unit tests (fixture-based)
 API.md                      the v1 host/dashboard HTTP contract
 ```
 
-Installed paths on a host: code+venv `/opt/servermon`, config
-`/etc/servermon/config.yml`, DB `/var/lib/servermon/metrics.db`, units in
-`/etc/systemd/system/servermon-*`.
+Installed paths on a host: code+venv `/opt/marnarmon`, config
+`/etc/marnarmon/config.yml`, DB `/var/lib/marnarmon/metrics.db`, units in
+`/etc/systemd/system/marnarmon-*`.
 
 ## Design decisions (respect these)
 
@@ -37,13 +37,13 @@ Installed paths on a host: code+venv `/opt/servermon`, config
 - **CPU% and network rates are deltas vs the previous stored SQLite sample**,
   not in-cycle sleeps. The collector is stateless per run; state lives in the DB.
 - **systemd timer** runs the oneshot collector every N minutes; the API is a
-  separate long-running uvicorn unit. Both run as the unprivileged `servermon`
+  separate long-running uvicorn unit. Both run as the unprivileged `marnarmon`
   user with hardening.
-- **venv at `/opt/servermon`** to avoid Debian/RPi PEP-668 "externally managed"
+- **venv at `/opt/marnarmon`** to avoid Debian/RPi PEP-668 "externally managed"
   pip errors.
 - **Disks come from `/etc/fstab`** (mount column, excluding swap/none); the user
   selects which to track at install. Never hardcode mounts.
-- **Config is YAML** at `/etc/servermon/config.yml`; nothing is hardcoded.
+- **Config is YAML** at `/etc/marnarmon/config.yml`; nothing is hardcoded.
 - **API binds `0.0.0.0` with an optional bearer token** (generated at install).
 
 ## Conventions
@@ -58,8 +58,8 @@ Installed paths on a host: code+venv `/opt/servermon`, config
 
 ```bash
 cd host && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-SERVERMON_CONFIG=../config/config.example.yml .venv/bin/python -m servermon.collect
-SERVERMON_CONFIG=../config/config.example.yml .venv/bin/uvicorn servermon.api:app --port 8787
+MARNARMON_CONFIG=../config/config.example.yml .venv/bin/python -m marnarmon.collect
+MARNARMON_CONFIG=../config/config.example.yml .venv/bin/uvicorn marnarmon.api:app --port 8787
 python tests/test_collectors.py     # no live /proc needed for parser tests
 ```
 
@@ -67,5 +67,3 @@ python tests/test_collectors.py     # no live /proc needed for parser tests
 
 - A recursive `find`/`ls` from the project root can be huge if `dashboard/`
   contains `node_modules` — scope listings (`-maxdepth`, `-prune`).
-- Before publishing, replace the `Copyright 2026 Helder` line in `LICENSE`/
-  `NOTICE` with a real legal/company name.

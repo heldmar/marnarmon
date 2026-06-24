@@ -1,9 +1,9 @@
 """One collection cycle: read metrics, compute deltas, store, prune.
 
-Invoked by the systemd timer (servermon-collector.timer) as a oneshot. Keeping
+Invoked by the systemd timer (marnarmon-collector.timer) as a oneshot. Keeping
 it stateless-per-process (state lives in SQLite) makes it robust to restarts.
 
-Run manually:  python -m servermon.collect
+Run manually:  python -m marnarmon.collect
 """
 from __future__ import annotations
 
@@ -79,10 +79,10 @@ def main() -> int:
     try:
         result = run_once()
     except Exception as exc:  # noqa: BLE001 - surface to journald and exit non-zero
-        print(f"servermon collect failed: {exc}", file=sys.stderr)
+        print(f"marnarmon collect failed: {exc}", file=sys.stderr)
         return 1
     print(
-        f"servermon collect ok ts={result['ts']} "
+        f"marnarmon collect ok ts={result['ts']} "
         f"cpu={result['cpu_percent']}% disks={result['disks']} "
         f"pruned={result['pruned']}"
     )

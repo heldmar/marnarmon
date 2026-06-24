@@ -1,4 +1,4 @@
-"""SQLite storage for ServerMon metrics.
+"""SQLite storage for MarNarMon metrics.
 
 Two tables:
   snapshots    - one row per collection cycle (CPU/RAM/net/load/uptime)

@@ -1,6 +1,6 @@
 [Unit]
-Description=Run ServerMon collector every __INTERVAL__ minutes
-Documentation=https://github.com/heldmar/servermon
+Description=Run MarNarMon collector every __INTERVAL__ minutes
+Documentation=https://github.com/heldmar/marnarmon
 
 [Timer]
 # First run shortly after boot, then on a fixed cadence.
@@ -8,7 +8,7 @@ OnBootSec=1min
 OnUnitActiveSec=__INTERVAL__min
 AccuracySec=15s
 Persistent=true
-Unit=servermon-collector.service
+Unit=marnarmon-collector.service
 
 [Install]
 WantedBy=timers.target
