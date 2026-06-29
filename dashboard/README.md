@@ -78,12 +78,28 @@ docker run -d -p 8080:80 \
 
 ## Local development
 
+This project uses **pnpm** (via Corepack — `corepack enable` once, then the
+version pinned in `package.json`'s `packageManager` field is used automatically).
+
 ```bash
-npm install
+pnpm install
 # edit public/config.js to point at a running host API, then:
-npm run dev        # http://localhost:5173
-npm run build      # production bundle into dist/
+pnpm dev           # http://localhost:5173
+pnpm build         # production bundle into dist/
 ```
+
+### Dependency security policy
+
+`pnpm-workspace.yaml` hardens the supply chain:
+
+- **`minimumReleaseAge: 10080`** — a package version must be public for 7 days
+  before pnpm will resolve it, so a compromised release pulled from the registry
+  within that window never lands in the lockfile. Applies to `pnpm add` /
+  `pnpm update` (not frozen CI/Docker installs).
+- **`allowBuilds`** — dependency install/build scripts are blocked by default;
+  only explicitly allow-listed packages (currently just `esbuild`, which fetches
+  its native binary) may run scripts. Adding a dep that needs a build script
+  will hard-fail until you add it here — review before allowing.
 
 ## CORS / networking notes
 

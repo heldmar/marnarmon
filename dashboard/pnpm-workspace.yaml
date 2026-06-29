@@ -1,0 +1,26 @@
+# pnpm project settings (pnpm 10.16+ reads settings from this file).
+#
+# Supply-chain hardening: refuse to install any package version — including
+# transitive dependencies — until it has been published for at least this many
+# MINUTES. Most malicious releases are detected and pulled from the registry
+# within hours, so a delay means a compromised version is gone before it can
+# land in a resolve. pnpm 11 defaults this to 1440 (1 day); we raise it to
+# 7 days (10080 minutes) for a wider safety margin.
+#
+# This applies when the lockfile is (re)resolved — `pnpm add`, `pnpm update`,
+# or `pnpm install` without a frozen lockfile. Frozen installs (CI / the Docker
+# build, which use `--frozen-lockfile`) install the already-pinned versions and
+# are not blocked, so an urgent build is never held up by this window.
+minimumReleaseAge: 10080
+# If you ever need a brand-new version before the window elapses, allow-list it:
+# minimumReleaseAgeExclude:
+#   - 'some-package'
+
+# pnpm blocks dependency install/build (lifecycle) scripts by default — a
+# malicious package can't run arbitrary code on install. `allowBuilds` is the
+# explicit allow-list (pnpm 11 replaced `onlyBuiltDependencies` with this map).
+# Anything not set to `true` is refused, and pnpm hard-fails on an unreviewed
+# build (strictDepBuilds defaults to true). esbuild's script fetches its native
+# binary (required for `vite build`); nothing else in this tree needs scripts.
+allowBuilds:
+  esbuild: true

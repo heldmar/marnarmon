@@ -3,7 +3,8 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "MarNarMon dashboard — React UI for the MarNarMon host agent API (commercial).",
+  "description": "MarNarMon dashboard — React UI for the MarNarMon host agent API.",
+  "packageManager": "pnpm@11.4.0",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

@@ -15,16 +15,26 @@ documented in `../API.md` (v1).
 
 - React 18 + Vite, **Recharts is the only external UI dependency**. Gauges are
   hand-drawn SVG — do not add a component library.
+- **Package manager is pnpm** (not npm), via Corepack, version pinned in
+  `package.json` `packageManager`. Lockfile is `pnpm-lock.yaml`; there is no
+  `package-lock.json`. Settings + supply-chain policy live in
+  `pnpm-workspace.yaml`.
 - `src/` — `App.jsx` (orchestration), `api.js`, `config.js`, `format.js`,
   `hooks/` (`usePolling`, `useTheme`), `components/` (`Gauge`, `GaugeCard`,
   `TimeSeriesChart`, `Header`, `WindowSelector`).
 - `Dockerfile` (multi-stage node→nginx), `nginx.conf`, `docker-entrypoint.sh`,
-  `docker-compose.yml`, `.env.example`.
+  `docker-compose.yml`, `.env.example`, `pnpm-workspace.yaml`.
 
 ## Design decisions (respect these)
 
 - **Dark theme by default**, light toggle persisted in `localStorage`.
 - **Single host** (multi-host is a candidate future feature).
+- **pnpm, hardened for supply-chain safety** (migrated from npm). Policy in
+  `pnpm-workspace.yaml`: `minimumReleaseAge: 10080` (won't resolve a version
+  until it's been public 7 days, so a yanked-malicious release never lands) and
+  `allowBuilds` (install/build scripts blocked unless allow-listed; only
+  `esbuild` is permitted). Don't loosen these or switch back to npm without a
+  reason. The Docker build uses `pnpm install --frozen-lockfile`.
 - **Runtime config, NOT build-time.** The app reads
   `window.__MARNARMON_CONFIG__` from `/config.js`. In Docker, the entrypoint in
   `/docker-entrypoint.d/` rewrites `config.js` from env vars
@@ -51,9 +61,16 @@ documented in `../API.md` (v1).
   HTTPS page is blocked as mixed content.
 - Tolerate unknown extra fields from the API and don't assume a fixed disk count
   (forward-compatible with API v1).
-- Don't run `npm install` in a Cowork-mounted folder you need to clean later —
-  the sandbox can't delete those files. Docker's multi-stage build installs deps
-  inside the image instead.
+- Don't run `pnpm install` in a Cowork-mounted folder you need to clean later —
+  the sandbox can't delete the `node_modules` it creates. Docker's multi-stage
+  build installs deps inside the image instead. To touch the lockfile without
+  installing, use `pnpm install --lockfile-only` or `pnpm import` (no
+  `node_modules`).
+- **pnpm 11 supply-chain policy lives in `pnpm-workspace.yaml`** (`allowBuilds`,
+  `minimumReleaseAge`) — see Design decisions. Two pnpm-11 gotchas: the old
+  `onlyBuiltDependencies` key was **removed** in favor of the `allowBuilds`
+  map (`pkg: true`), and `strictDepBuilds` defaults to `true` so an unreviewed
+  build script is a hard `ERR_PNPM_IGNORED_BUILDS` error, not a warning.
 - **Reverse-proxying by container name (NPM, Traefik, etc.) requires this
   container to share a Docker network with the proxy.** That's why
   `docker-compose.yml` joins `npm-network` (`external: true`) — without it the
@@ -68,11 +85,13 @@ documented in `../API.md` (v1).
 
 ## Dev / build
 
+Uses **pnpm** via Corepack (`corepack enable` once).
+
 ```bash
-npm install
+pnpm install
 # edit public/config.js to point at a running host API
-npm run dev      # http://localhost:5173
-npm run build    # -> dist/
+pnpm dev         # http://localhost:5173
+pnpm build       # -> dist/
 # Docker: edit API_BASE_URL in docker-compose.yml, then:
 docker compose up -d --build   # http://localhost:8080
 ```
