@@ -1,6 +1,6 @@
-# --- ServerMon host repo (public, Apache-2.0) ---
-# The dashboard is a SEPARATE, private repo. Never commit it here.
-dashboard/
+# --- MarNarMon (public, Apache-2.0) ---
+# The dashboard source lives in dashboard/ and IS part of this repo. Its build
+# artifacts (node_modules/, dist/) are ignored via dashboard/.gitignore.
 
 # Agent/Cowork memory must never be committed (it lives outside the repo, but
 # guard against an accidental copy/export into the project).

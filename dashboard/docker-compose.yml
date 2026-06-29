@@ -1,0 +1,34 @@
+services:
+  dashboard:
+    build: .
+    image: marnarmon-dashboard:latest
+    pull_policy: build
+    container_name: marnarmon-dashboard
+    ports:
+      - "8080:80"
+    environment:
+      # Browser-facing API base. "/api" = same-origin reverse proxy: the browser
+      # calls https://<this-domain>/api/... and nginx forwards to API_UPSTREAM.
+      # This is required when the dashboard is served over public HTTPS — it
+      # avoids the mixed-content block and the unreachable private LAN IP.
+      # (For direct LAN-only access you could instead set a full URL here and
+      # ignore API_UPSTREAM, but then it won't work off the LAN.)
+      API_BASE_URL: "/api"
+      # Where nginx forwards /api/ — the host agent as reached FROM THE
+      # CONTAINER (host LAN IP, reachable on the Docker network).
+      API_UPSTREAM: "http://192.168.4.200:8787"
+      # Poll interval in seconds (default 300 = 5 min).
+      REFRESH_SECONDS: "300"
+      # Bearer token if the host API has auth enabled; leave empty otherwise.
+      API_TOKEN: ""
+    restart: unless-stopped
+    networks:
+      - default
+      - npm-network
+
+networks:
+  npm-network:
+    # Pre-existing network created by Nginx Proxy Manager's own stack.
+    # Joining it lets NPM reach this container by name (forward to
+    # "marnarmon-dashboard" port 80) instead of the host IP.
+    external: true

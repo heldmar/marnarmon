@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MarNarMon</title>
+    <meta name="description" content="MarNarMon — server metrics dashboard" />
+    <!-- Runtime config: in Docker this file is regenerated from env vars at
+         container start. In dev it is served from public/config.js. Must load
+         before the app bundle. -->
+    <script src="/config.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

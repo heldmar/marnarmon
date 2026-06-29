@@ -1,7 +1,7 @@
 # MarNarMon API contract (v1)
 
-This is the stable boundary between the **host agent** (free, this repo) and the
-**dashboard** (commercial, separate repo). Both sides build against this spec.
+This is the stable boundary between the **host agent** and the **dashboard**
+(both in this repo, under `dashboard/`). Both sides build against this spec.
 Treat it as versioned: additive changes are fine; breaking changes get a new
 major version and a new path prefix.
 

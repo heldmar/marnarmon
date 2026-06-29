@@ -4,11 +4,12 @@ A lightweight, self-hosted server monitoring system — a small CloudWatch
 replacement for Amazon EC2 / Lightsail that runs equally well on a Raspberry Pi
 or any Linux box. It collects CPU, RAM, network, and per-disk usage straight
 from `/proc` and `statvfs` (no `psutil`), stores rolling history in SQLite, and
-serves it over a tiny FastAPI service. A React dashboard (Part 2) consumes the
-same API.
+serves it over a tiny FastAPI service. A React dashboard (in [`dashboard/`](dashboard/))
+consumes the same API.
 
-> **Status:** Part 1 (host-side agent) is complete. Part 2 (React dashboard) is
-> planned next.
+> **Status:** both parts are complete and open source (Apache-2.0): the
+> host-side agent (this directory) and the React dashboard ([`dashboard/`](dashboard/),
+> shipped as a Docker container). The HTTP contract between them is [`API.md`](API.md).
 
 ## What it does
 

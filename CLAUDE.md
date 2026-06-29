@@ -1,17 +1,19 @@
-# MarNarMon — host agent (project guide)
+# MarNarMon (project guide)
 
-Context for Claude Code / contributors working in this repo. This is the
-**public, open-source host agent** (Apache-2.0). The dashboard is a separate
-private repo under `dashboard/` and is **excluded by `.gitignore`** — do not
-add commercial/dashboard details to this file or commit `dashboard/` here.
+Context for Claude Code / contributors working in this repo. This is a single
+**public, open-source** project (Apache-2.0) with two parts: the **host agent**
+(this directory) and the **dashboard** (`dashboard/`). They were once split
+across two repos (one public, one commercial); that is no longer the case —
+everything here is open source and lives in one repo. The dashboard has its own
+guide at `dashboard/CLAUDE.md`.
 
 ## What this is
 
 A lightweight, self-hosted Linux monitoring agent (a small CloudWatch
 alternative) that runs on any Linux host — primarily a Raspberry Pi 4B and
 EC2/Lightsail. It collects CPU, RAM, network, and per-disk usage, stores rolling
-history in SQLite, and serves it over a small FastAPI service. A separate
-(commercial) dashboard consumes the API. The API is the only contract between
+history in SQLite, and serves it over a small FastAPI service. The React
+dashboard in `dashboard/` consumes the API. The API is the only contract between
 them — see `API.md`.
 
 ## Layout
