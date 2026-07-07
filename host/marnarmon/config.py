@@ -29,6 +29,14 @@ class Config:
     api_token: str
     default_history_minutes: int
 
+    # Server Logs (journald browsing). Opt-in: off unless enabled at install.
+    logs_enabled: bool
+    logs_max_lines: int
+    logs_default_lines: int
+    logs_default_window_minutes: int
+    logs_timeout_seconds: float
+    logs_journalctl_path: str
+
     raw: dict = field(default_factory=dict, repr=False)
 
 
@@ -76,6 +84,23 @@ def load_config(path: str | None = None) -> Config:
     api_token = (api.get("token") or "").strip()
     default_history = int(api.get("default_history_minutes", 1440))
 
+    logs = data.get("logs", {}) or {}
+    logs_enabled = bool(logs.get("enabled", False))
+    logs_max_lines = int(logs.get("max_lines", 500))
+    if logs_max_lines < 1:
+        raise ValueError("logs.max_lines must be >= 1")
+    logs_default_lines = int(logs.get("default_lines", 100))
+    if logs_default_lines < 1:
+        raise ValueError("logs.default_lines must be >= 1")
+    logs_default_lines = min(logs_default_lines, logs_max_lines)
+    logs_default_window_minutes = int(logs.get("default_window_minutes", 60))
+    if logs_default_window_minutes < 1:
+        raise ValueError("logs.default_window_minutes must be >= 1")
+    logs_timeout_seconds = float(logs.get("timeout_seconds", 8.0))
+    if logs_timeout_seconds <= 0:
+        raise ValueError("logs.timeout_seconds must be > 0")
+    logs_journalctl_path = str(logs.get("journalctl_path") or "journalctl")
+
     return Config(
         host_name=host_name,
         interval_minutes=interval,
@@ -87,5 +112,11 @@ def load_config(path: str | None = None) -> Config:
         api_port=api_port,
         api_token=api_token,
         default_history_minutes=default_history,
+        logs_enabled=logs_enabled,
+        logs_max_lines=logs_max_lines,
+        logs_default_lines=logs_default_lines,
+        logs_default_window_minutes=logs_default_window_minutes,
+        logs_timeout_seconds=logs_timeout_seconds,
+        logs_journalctl_path=logs_journalctl_path,
         raw=data,
     )

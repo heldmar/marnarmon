@@ -19,13 +19,22 @@ consumes the same API.
   (`os.statvfs`) for each configured mount point. Writes a snapshot to SQLite
   and prunes rows past the retention window.
 - **API** — a FastAPI/uvicorn service exposing the stored data:
-  - `GET /health` — liveness + age of the last sample
+  - `GET /health` — liveness + age of the last sample (+ `features` flags)
   - `GET /metrics/current` — latest snapshot (CPU/RAM/net/load + per-disk)
   - `GET /metrics/history?window=24h` — time series (`window` accepts `30m`,
     `24h`, `7d`, or `?minutes=N`)
+  - `GET /logs`, `GET /logs/sources` — systemd-journal browsing, **only when
+    Server Logs is enabled** (see below)
+- **Server Logs (optional)** — an easy, friendly journal browser for
+  troubleshooting: search by keyword, filter by severity (Errors / Warnings /
+  Info / Everything), pick sources (systemd units + kernel), and choose a time
+  range (presets or a custom from/to). It reads the systemd journal live via
+  `journalctl` (no log data is copied into MarNarMon). **Off by default** — you
+  opt in during `install.sh`, which grants the service user journal access; the
+  dashboard shows the "Server Logs" section only when the host has it enabled.
 - **Config-driven** — everything lives in `/etc/marnarmon/config.yml`: tracked
-  mount points, collection interval, retention, API bind/port, and an optional
-  bearer token. Nothing is hardcoded.
+  mount points, collection interval, retention, API bind/port, an optional
+  bearer token, and the Server Logs toggle. Nothing is hardcoded.
 
 ## Install
 
@@ -41,7 +50,9 @@ The installer is interactive. It will:
 1. Install `python3` + `venv` (apt/dnf/yum/apk aware).
 2. Create a `marnarmon` system user.
 3. Ask for host name, collection interval, retention, API bind address/port,
-   and whether to enable a bearer token (auto-generated).
+   whether to enable a bearer token (auto-generated), and **whether to enable
+   Server Logs** (opt-in; adds the service user to the `systemd-journal` group
+   so the API can read the journal).
 4. List the mount points found in `/etc/fstab` (with live usage) and let you
    pick which disks to track.
 5. Deploy the code to `/opt/marnarmon`, build a venv, write the config,
@@ -110,8 +121,9 @@ python3 -m venv .venv && . .venv/bin/python -m pip install -r requirements.txt
 MARNARMON_CONFIG=../config/config.example.yml python -m marnarmon.collect
 MARNARMON_CONFIG=../config/config.example.yml uvicorn marnarmon.api:app --port 8787
 
-# tests (no /proc fixtures needed for parsers)
+# tests (no /proc or live journal needed for parsers)
 python ../tests/test_collectors.py
+python ../tests/test_logs.py
 ```
 
 ## Uninstall

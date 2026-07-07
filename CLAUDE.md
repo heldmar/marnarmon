@@ -12,18 +12,21 @@ guide at `dashboard/CLAUDE.md`.
 A lightweight, self-hosted Linux monitoring agent (a small CloudWatch
 alternative) that runs on any Linux host — primarily a Raspberry Pi 4B and
 EC2/Lightsail. It collects CPU, RAM, network, and per-disk usage, stores rolling
-history in SQLite, and serves it over a small FastAPI service. The React
-dashboard in `dashboard/` consumes the API. The API is the only contract between
-them — see `API.md`.
+history in SQLite, and serves it over a small FastAPI service. It also has an
+optional **Server Logs** feature: a friendly systemd-journal browser for
+troubleshooting. The React dashboard in `dashboard/` consumes the API and shows
+two sections (Server Resources + Server Logs) via a left icon rail. The API is
+the only contract between them — see `API.md`.
 
 ## Layout
 
 ```
 install.sh / uninstall.sh   interactive installer / remover
 config/config.example.yml   reference config
-host/marnarmon/             Python package: collectors, db, api, collect, config
+host/marnarmon/             Python package: collectors, db, api, collect, config, logs
 host/systemd/               unit templates (placeholders filled at install)
 tests/test_collectors.py    parser + DB unit tests (fixture-based)
+tests/test_logs.py          journal reader unit tests (fixture-based)
 API.md                      the v1 host/dashboard HTTP contract
 ```
 
@@ -47,6 +50,17 @@ Installed paths on a host: code+venv `/opt/marnarmon`, config
   selects which to track at install. Never hardcode mounts.
 - **Config is YAML** at `/etc/marnarmon/config.yml`; nothing is hardcoded.
 - **API binds `0.0.0.0` with an optional bearer token** (generated at install).
+- **Server Logs (`host/marnarmon/logs.py`) is opt-in and a deliberate privilege
+  boundary.** It shells out to `journalctl -o json` per request (same "no
+  library, read the primitive directly" stance as the `/proc` collectors — not
+  `systemd-python`, which needs `libsystemd-dev` and is flaky on ARM). No log
+  data is stored; journald owns retention. Default `logs.enabled: false`; when
+  enabled, `install.sh` adds the service user to `systemd-journal` and renders
+  `SupplementaryGroups=systemd-journal` into `marnarmon-api.service` (via the
+  `__LOG_GROUP_LINE__` placeholder). This is the ONLY thing that widens the
+  service's access beyond its own DB — keep it opt-in and explicit. The API
+  advertises `features.logs` on `/health` + `/`; the dashboard hides the whole
+  logs section unless that's true. Severity filters are cumulative (`-p N`).
 
 ## Conventions
 

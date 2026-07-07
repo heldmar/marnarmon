@@ -125,6 +125,27 @@ case "$enable_token" in
     *) warn "API will be served WITHOUT authentication" ;;
 esac
 
+# Server Logs (journald browsing) — opt-in. Enabling grants the service user
+# read access to the whole system journal, so it's off unless explicitly chosen.
+LOGS_ENABLED="false"
+# sed program used by render_unit to fill/remove the journal-group line in the
+# API unit. Default: delete the placeholder (logs off).
+LOG_GROUP_REPL='/#__LOG_GROUP_LINE__#/d'
+enable_logs="$(ask 'Enable Server Logs (lets the dashboard browse this host'"'"'s system journal)? (y/N)' 'N')"
+case "$enable_logs" in
+    [yY]*)
+        LOGS_ENABLED="true"
+        LOG_GROUP_REPL='s|#__LOG_GROUP_LINE__#|SupplementaryGroups=systemd-journal|'
+        if getent group systemd-journal >/dev/null 2>&1; then
+            usermod -aG systemd-journal "${SERVICE_USER}"
+            ok "Server Logs enabled — added '${SERVICE_USER}' to the systemd-journal group"
+        else
+            warn "systemd-journal group not found — Server Logs may not work on this distro"
+        fi
+        ;;
+    *) warn "Server Logs disabled (dashboard shows only Server Resources)" ;;
+esac
+
 # --------------------------------------------------------------------------- #
 # 4. Disk selection from /etc/fstab
 # --------------------------------------------------------------------------- #
@@ -224,6 +245,13 @@ mkdir -p "${CONFIG_DIR}"
     echo "  port: ${API_PORT}"
     echo "  token: \"${API_TOKEN}\""
     echo "  default_history_minutes: 1440"
+    echo "logs:"
+    echo "  enabled: ${LOGS_ENABLED}"
+    echo "  max_lines: 500"
+    echo "  default_lines: 100"
+    echo "  default_window_minutes: 60"
+    echo "  timeout_seconds: 8.0"
+    echo "  journalctl_path: \"journalctl\""
 } > "${CONFIG_FILE}"
 chown root:"${SERVICE_USER}" "${CONFIG_FILE}"
 chmod 640 "${CONFIG_FILE}"
@@ -234,12 +262,16 @@ ok "Config written"
 # --------------------------------------------------------------------------- #
 info "Installing systemd units"
 render_unit() {
+    # LOG_GROUP_REPL either fills the __LOG_GROUP_LINE__ placeholder with the
+    # journal-group directive (logs on) or deletes it (logs off / other units
+    # that don't contain the placeholder — a harmless no-op there).
     sed -e "s|__PREFIX__|${PREFIX}|g" \
         -e "s|__USER__|${SERVICE_USER}|g" \
         -e "s|__DB_DIR__|${DB_DIR}|g" \
         -e "s|__INTERVAL__|${INTERVAL}|g" \
         -e "s|__API_HOST__|${API_HOST}|g" \
         -e "s|__API_PORT__|${API_PORT}|g" \
+        -e "${LOG_GROUP_REPL}" \
         "$1" > "${SYSTEMD_DIR}/$(basename "$1")"
 }
 render_unit "${SRC_DIR}/systemd/marnarmon-collector.service"
@@ -248,7 +280,12 @@ render_unit "${SRC_DIR}/systemd/marnarmon-api.service"
 
 systemctl daemon-reload
 systemctl enable --now marnarmon-collector.timer >/dev/null 2>&1
-systemctl enable --now marnarmon-api.service >/dev/null 2>&1
+# enable + restart (not enable --now): on a re-run to opt into Server Logs, the
+# service is already running, so 'enable --now' would NOT pick up the changed
+# unit file or new group membership. restart applies both, whether or not it
+# was already up.
+systemctl enable marnarmon-api.service >/dev/null 2>&1
+systemctl restart marnarmon-api.service >/dev/null 2>&1
 ok "Units installed and enabled"
 
 # --------------------------------------------------------------------------- #
@@ -285,6 +322,11 @@ echo
 echo -e "${GREEN}${BOLD}MarNarMon installed.${RESET}"
 echo "  API:        http://${check_host}:${API_PORT}"
 echo "  Endpoints:  /health  /metrics/current  /metrics/history?window=24h"
+if [ "$LOGS_ENABLED" = "true" ]; then
+    echo "  Server Logs: enabled  (/logs  /logs/sources)"
+else
+    echo "  Server Logs: disabled (re-run this installer and opt in to enable)"
+fi
 echo "  Config:     ${CONFIG_FILE}"
 echo "  Database:   ${DB_PATH}"
 echo "  Collector:  every ${INTERVAL} min (systemctl status marnarmon-collector.timer)"

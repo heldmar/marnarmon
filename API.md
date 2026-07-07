@@ -19,10 +19,16 @@ major version and a new path prefix.
 
 ## `GET /`
 
-Open (no auth). Service banner.
+Open (no auth). Service banner. `features` advertises optional capabilities the
+dashboard adapts to (see `/health`).
 
 ```json
-{ "service": "marnarmon", "version": "0.1.0", "host": "pi-server" }
+{
+  "service": "marnarmon",
+  "version": "0.1.0",
+  "host": "pi-server",
+  "features": { "logs": false }
+}
 ```
 
 ## `GET /health`
@@ -36,12 +42,18 @@ than 3× the collection interval, else `"stale"`.
   "host": "pi-server",
   "last_sample_ts": 1782331556,
   "last_sample_age_seconds": 12,
-  "interval_minutes": 5
+  "interval_minutes": 5,
+  "features": { "logs": false }
 }
 ```
 
 `503` is never returned here; a brand-new install with no samples yet returns
 `status: "stale"` with `last_sample_ts: null`.
+
+**`features`** is a capability map. `features.logs` is `true` when Server Logs
+is enabled on this host (`logs.enabled` in config). The dashboard reads it to
+decide whether to show the "Server Logs" section at all — when `false`, the
+`/logs*` endpoints below return `503` and the UI hides the section entirely.
 
 ## `GET /metrics/current`
 
@@ -125,6 +137,96 @@ GET /metrics/history?window=24h
 - `snapshots` is ordered oldest → newest.
 - `disks` is keyed by mount point, each an oldest → newest series.
 - An invalid `window` string returns `400`.
+
+---
+
+## Server Logs (systemd journal)
+
+Opt-in, off by default. When `logs.enabled` is `false`, both endpoints below
+return **`503`** with a machine-readable code and no other body:
+
+```json
+{ "code": "logs_disabled", "message": "Server Logs is not enabled on this host." }
+```
+
+Clients should key off `features.logs` from `/health` rather than probing these.
+Both endpoints are read-only (`GET`) and honor the same bearer-token auth.
+
+### `GET /logs/sources`
+
+The selectable log sources: every systemd unit that has ever logged (transient
+`*.scope` / `*.mount` / `*.slice` / `*.socket` / `*.target` / `*.device` noise
+filtered out) plus a synthetic `"kernel"` source. `unit` is the raw value to
+send back as a `?unit=` filter; `label` is a friendly display name. Cached
+server-side for ~60s.
+
+```json
+{
+  "host": "pi-server",
+  "sources": [
+    { "unit": "kernel", "label": "Kernel" },
+    { "unit": "nginx.service", "label": "Nginx" },
+    { "unit": "ssh.service", "label": "Ssh" }
+  ]
+}
+```
+
+### `GET /logs`
+
+Filtered journal lines, **newest first**. All filters are optional and combine
+(AND across different filters; multiple `unit` values OR together).
+
+| Param | Meaning |
+|-------|---------|
+| `q` | Keyword — matched as a **literal substring**, case-insensitive (no regex knowledge needed). |
+| `severity` | `errors` \| `warnings` \| `info` \| `all` (default `all`). **Cumulative**: `warnings` includes errors, `info` includes warnings+errors, `all` adds debug. |
+| `unit` | Source filter, repeatable (`?unit=nginx.service&unit=kernel`). Values come from `/logs/sources`. |
+| `window` | `30m` \| `24h` \| `7d` — look-back from now. |
+| `since` / `until` | Epoch **seconds** for a custom absolute range (takes precedence over `window`). |
+| `limit` | Max lines (capped server-side at `logs.max_lines`). |
+| `after_cursor` | Return only lines after this cursor (live catch-up). |
+| `exclude_cursor` | Drop this one cursor from the result (boundary de-dup for "load older"). |
+
+Neither `window` nor `since`/`until` → server default
+(`logs.default_window_minutes`, default 60).
+
+```
+GET /logs?severity=errors&q=disk&window=24h&limit=100
+```
+
+```json
+{
+  "host": "pi-server",
+  "lines": [
+    {
+      "ts": 1782331556,
+      "cursor": "s=abc;i=1f4;...",
+      "priority": 3,
+      "severity": "error",
+      "severity_label": "Error",
+      "unit": "nginx.service",
+      "source": "nginx.service",
+      "source_label": "Nginx",
+      "identifier": "nginx",
+      "pid": "812",
+      "hostname": "pi-server",
+      "message": "connect() failed: No space left on device"
+    }
+  ],
+  "count": 1,
+  "truncated": false,
+  "window_minutes": 1440
+}
+```
+
+- `priority` is the raw syslog level 0–7; `severity` is a coarse bucket
+  (`error` / `warning` / `info` / `debug`) for row coloring; `severity_label` is
+  the human name of the exact level.
+- `source` is the unit name, or `"kernel"`, or the syslog identifier when a line
+  has no unit; `source_label` is its friendly form.
+- `truncated` is `true` when the result hit `limit` (more lines may exist).
+- `window_minutes` is `null` when a custom `since`/`until` range was used.
+- A journalctl failure (bad filter, timeout, missing binary) returns `502`.
 
 ---
 

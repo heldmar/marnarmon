@@ -19,6 +19,9 @@ ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=__DB_DIR__
+# Server Logs opt-in: install.sh replaces the next line with
+# 'SupplementaryGroups=systemd-journal' when logs are enabled, or removes it.
+#__LOG_GROUP_LINE__#
 
 [Install]
 WantedBy=multi-user.target

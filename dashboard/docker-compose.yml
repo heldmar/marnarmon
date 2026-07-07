@@ -19,6 +19,9 @@ services:
       API_UPSTREAM: "http://192.168.4.200:8787"
       # Poll interval in seconds (default 300 = 5 min).
       REFRESH_SECONDS: "300"
+      # Server Logs "Live" auto-refresh interval in seconds (default 10). Only
+      # used when Server Logs is enabled on the host agent (logs.enabled).
+      LOGS_REFRESH_SECONDS: "10"
       # Bearer token if the host API has auth enabled; leave empty otherwise.
       API_TOKEN: ""
     restart: unless-stopped

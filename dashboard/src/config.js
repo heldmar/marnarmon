@@ -12,5 +12,8 @@ export const config = {
   refreshSeconds: Number(
     rt.REFRESH_SECONDS || import.meta.env.VITE_REFRESH_SECONDS || 300
   ),
+  logsRefreshSeconds: Number(
+    rt.LOGS_REFRESH_SECONDS || import.meta.env.VITE_LOGS_REFRESH_SECONDS || 10
+  ),
   apiToken: rt.API_TOKEN || import.meta.env.VITE_API_TOKEN || "",
 };

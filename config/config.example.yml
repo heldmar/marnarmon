@@ -34,3 +34,22 @@ api:
   token: ""
   # Default window (minutes) for /metrics/history when none is requested.
   default_history_minutes: 1440
+
+logs:
+  # Server Logs feature: browse/filter the systemd journal from the dashboard.
+  # OFF by default. When true, the API reads the journal via journalctl, which
+  # requires the 'marnarmon' service user to be in the systemd-journal group
+  # (install.sh grants this only if you opt in). The dashboard hides the whole
+  # "Server Logs" section unless the API reports this as enabled.
+  enabled: false
+  # Hard cap on lines returned per query (server-side, regardless of client).
+  max_lines: 500
+  # Lines returned when the client doesn't specify a limit.
+  default_lines: 100
+  # Default look-back window (minutes) when no window/range is requested. Kept
+  # small: an ungrounded keyword search over a long window can be slow on a Pi.
+  default_window_minutes: 60
+  # Abort a journal query after this many seconds (protects the API).
+  timeout_seconds: 8.0
+  # Override only if journalctl isn't on PATH for the service.
+  journalctl_path: "journalctl"

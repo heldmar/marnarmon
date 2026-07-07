@@ -49,6 +49,19 @@ export function makeTimeFormatter(windowMinutes) {
   };
 }
 
+// Log-row timestamp: HH:MM:SS, with a short date prefix when a range spans days.
+export function fmtLogTime(tsSeconds, withDate = false) {
+  const d = new Date(tsSeconds * 1000);
+  const t = d.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  if (!withDate) return t;
+  const day = d.toLocaleDateString([], { month: "short", day: "numeric" });
+  return `${day} ${t}`;
+}
+
 export function fmtTooltipTime(tsSeconds) {
   const d = new Date(tsSeconds * 1000);
   return d.toLocaleString([], {

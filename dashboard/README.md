@@ -24,10 +24,19 @@ The only contract between them is the HTTP API in [`../API.md`](../API.md).
 
 ## What it shows
 
+Two sections, switched from a left icon rail:
+
+**Server Resources**
 - Gauge panels: CPU, Memory, and one per tracked disk
 - Stat strip: net in/out, free memory, uptime
 - Time-series charts: CPU %, Memory %, Network in/out, Load average
 - Window selector: 1H / 6H / 24H / 7D
+
+**Server Logs** (shown only when the host has it enabled — `features.logs` on
+`/health`)
+- Keyword search, severity filter (Errors / Warnings / Info / Everything),
+  source picker (systemd units + kernel), time range (presets or custom from/to)
+- Severity-colored rows, a "Live" auto-refresh toggle, and a manual Refresh
 
 ## Configuration
 
@@ -38,7 +47,8 @@ container at start, so no rebuild needed to repoint it):
 |----------|---------|---------|
 | `API_BASE_URL` | `/api` | Browser-facing API base. `/api` = same-origin reverse proxy (recommended for public HTTPS). Or a full URL (`http://<lan-ip>:8787`) for direct LAN access. |
 | `API_UPSTREAM` | `http://localhost:8787` | Where nginx forwards `/api/` — the host agent **as reached from the container** (host LAN IP). Only used in same-origin mode. |
-| `REFRESH_SECONDS` | `300` | Poll interval (5 min) |
+| `REFRESH_SECONDS` | `300` | Metrics poll interval (5 min) |
+| `LOGS_REFRESH_SECONDS` | `10` | Server Logs "Live" auto-refresh interval. Only relevant when the host has Server Logs enabled. |
 | `API_TOKEN` | _(empty)_ | Bearer token, only if the host API has auth enabled |
 
 The browser sends the token directly on each request. In same-origin mode the
@@ -72,6 +82,7 @@ docker run -d -p 8080:80 \
   -e API_BASE_URL="/api" \
   -e API_UPSTREAM="http://192.168.4.200:8787" \
   -e REFRESH_SECONDS=300 \
+  -e LOGS_REFRESH_SECONDS=10 \
   -e API_TOKEN="" \
   marnarmon-dashboard
 ```

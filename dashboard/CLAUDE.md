@@ -19,9 +19,14 @@ documented in `../API.md` (v1).
   `package.json` `packageManager`. Lockfile is `pnpm-lock.yaml`; there is no
   `package-lock.json`. Settings + supply-chain policy live in
   `pnpm-workspace.yaml`.
-- `src/` — `App.jsx` (orchestration), `api.js`, `config.js`, `format.js`,
-  `hooks/` (`usePolling`, `useTheme`), `components/` (`Gauge`, `GaugeCard`,
-  `TimeSeriesChart`, `Header`, `WindowSelector`).
+- `src/` — `App.jsx` (thin shell: theme + section switch + `/health` poll),
+  `api.js`, `config.js`, `format.js`, `hooks/` (`usePolling`, `useTheme`),
+  `views/` (`MetricsView`, `LogsView`), `components/` (`Sidebar`, `Gauge`,
+  `GaugeCard`, `TimeSeriesChart`, `Header`, `WindowSelector`, `SegmentedControl`,
+  `TimeRangeControl`, `SourcePicker`, `LogList`).
+- **Two sections via a left icon rail** (`Sidebar`), not a router: `App.jsx`
+  holds `section` state ("resources" | "logs") and renders one view. No
+  `react-router` — a two-item switch doesn't need it.
 - `Dockerfile` (multi-stage node→nginx), `nginx.conf`, `docker-entrypoint.sh`,
   `docker-compose.yml`, `.env.example`, `pnpm-workspace.yaml`.
 
@@ -29,6 +34,16 @@ documented in `../API.md` (v1).
 
 - **Dark theme by default**, light toggle persisted in `localStorage`.
 - **Single host** (multi-host is a candidate future feature).
+- **Server Logs is capability-gated, not configured on the dashboard.** The
+  dashboard shows the "Server Logs" rail item only when the host's `/health`
+  reports `features.logs: true` (the host is the single source of truth — flip
+  it off there and every dashboard drops the section, no redeploy). `LogsView`
+  polls `/logs` via `usePolling` with `{ enabled: live }` (the Live toggle) plus
+  a manual Refresh; `LOGS_REFRESH_SECONDS` (default 10, its own env var) is the
+  live interval, deliberately shorter than the 300s metrics `REFRESH_SECONDS`.
+  Filters send friendly values straight to the API (severity buckets, `unit`
+  repeats, `window` or custom `since`/`until` epoch seconds). Keep the logs UI
+  dependency-free like the rest (hand-drawn SVG icons, hand-rolled multiselect).
 - **pnpm, hardened for supply-chain safety** (migrated from npm). Policy in
   `pnpm-workspace.yaml`: `minimumReleaseAge: 10080` (won't resolve a version
   until it's been public 7 days, so a yanked-malicious release never lands) and
