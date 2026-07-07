@@ -9,7 +9,7 @@ Endpoints:
 
 Optional bearer-token auth: when api.token is set in config, all /metrics,
 /logs and /health (except the open root) require  Authorization: Bearer <token>.
-CORS is open so the dashboard container can call it from a browser.
+CORS origins are configurable via api.allowed_origins (default ["*"]).
 
 The /logs endpoints are gated by logs.enabled in config (default off): they
 return 503 {"code": "logs_disabled"} when disabled, and the dashboard uses the
@@ -35,7 +35,7 @@ cfg = load_config()
 app = FastAPI(title="MarNarMon", version=__version__)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cfg.allowed_origins,
     allow_methods=["GET"],
     allow_headers=["*"],
 )

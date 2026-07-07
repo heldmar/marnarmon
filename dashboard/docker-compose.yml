@@ -22,8 +22,12 @@ services:
       # Server Logs "Live" auto-refresh interval in seconds (default 10). Only
       # used when Server Logs is enabled on the host agent (logs.enabled).
       LOGS_REFRESH_SECONDS: "10"
-      # Bearer token if the host API has auth enabled; leave empty otherwise.
-      API_TOKEN: ""
+      # Bearer token if the host API has auth enabled. Do NOT hardcode a secret
+      # here (this file is public) — set it as a stack/environment variable
+      # (Portainer: stack "Environment variables"; CLI: an .env file). In the
+      # default same-origin proxy mode the entrypoint injects it server-side, so
+      # it never reaches the browser.
+      API_TOKEN: "${API_TOKEN:-}"
     restart: unless-stopped
     networks:
       - default

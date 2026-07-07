@@ -31,7 +31,14 @@ api:
   port: 8787
   # Optional bearer token. Empty = no authentication.
   # When set, clients must send: Authorization: Bearer <token>
+  # Strongly recommended whenever the API is reachable beyond localhost — it is
+  # the only thing protecting metrics AND (if enabled) the system journal.
   token: ""
+  # Browser origins allowed to call the API cross-origin (CORS). ["*"] = any,
+  # which is fine behind a trusted reverse proxy / on a trusted LAN. Restrict to
+  # your dashboard origin(s) when the API could be reached from untrusted
+  # networks, e.g. ["https://dashboard.example.net"].
+  allowed_origins: ["*"]
   # Default window (minutes) for /metrics/history when none is requested.
   default_history_minutes: 1440
 

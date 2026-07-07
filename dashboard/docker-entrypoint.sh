@@ -16,12 +16,25 @@ API_BASE_URL="${API_BASE_URL:-/api}"
 API_UPSTREAM="${API_UPSTREAM:-http://localhost:8787}"
 API_UPSTREAM="${API_UPSTREAM%/}"
 
+# Decide where the bearer token (if any) lives. In same-origin proxy mode
+# (API_BASE_URL starts with "/") nginx injects the Authorization header
+# server-side, so the token NEVER reaches the browser. In direct mode the
+# browser must send it, so it goes in config.js (visible client-side — prefer
+# proxy mode for anything Internet-adjacent).
+API_TOKEN="${API_TOKEN:-}"
+CONFIG_TOKEN=""
+PROXY_AUTH=""
+case "$API_BASE_URL" in
+  /*) [ -n "$API_TOKEN" ] && PROXY_AUTH="proxy_set_header Authorization \"Bearer ${API_TOKEN}\";" ;;
+  *)  CONFIG_TOKEN="$API_TOKEN" ;;
+esac
+
 cat > "$CONFIG_PATH" <<EOF
 window.__MARNARMON_CONFIG__ = {
   API_BASE_URL: "${API_BASE_URL}",
   REFRESH_SECONDS: ${REFRESH_SECONDS:-300},
   LOGS_REFRESH_SECONDS: ${LOGS_REFRESH_SECONDS:-10},
-  API_TOKEN: "${API_TOKEN:-}"
+  API_TOKEN: "${CONFIG_TOKEN}"
 };
 EOF
 
@@ -37,6 +50,7 @@ location /api/ {
     proxy_set_header X-Real-IP \$remote_addr;
     proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto \$scheme;
+    ${PROXY_AUTH}
 }
 EOF
 

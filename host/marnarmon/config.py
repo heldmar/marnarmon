@@ -28,6 +28,7 @@ class Config:
     api_port: int
     api_token: str
     default_history_minutes: int
+    allowed_origins: List[str]
 
     # Server Logs (journald browsing). Opt-in: off unless enabled at install.
     logs_enabled: bool
@@ -84,6 +85,17 @@ def load_config(path: str | None = None) -> Config:
     api_token = (api.get("token") or "").strip()
     default_history = int(api.get("default_history_minutes", 1440))
 
+    # CORS: which browser origins may call the API. Default ["*"] (any) is fine
+    # behind a trusted proxy/LAN; restrict to the dashboard origin(s) when the
+    # API could be reached from untrusted networks.
+    allowed = api.get("allowed_origins")
+    if allowed is None:
+        allowed_origins = ["*"]
+    elif isinstance(allowed, list):
+        allowed_origins = [str(o) for o in allowed]
+    else:
+        raise ValueError("api.allowed_origins must be a list of origin strings")
+
     logs = data.get("logs", {}) or {}
     logs_enabled = bool(logs.get("enabled", False))
     logs_max_lines = int(logs.get("max_lines", 500))
@@ -112,6 +124,7 @@ def load_config(path: str | None = None) -> Config:
         api_port=api_port,
         api_token=api_token,
         default_history_minutes=default_history,
+        allowed_origins=allowed_origins,
         logs_enabled=logs_enabled,
         logs_max_lines=logs_max_lines,
         logs_default_lines=logs_default_lines,
