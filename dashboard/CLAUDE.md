@@ -62,10 +62,14 @@ documented in `../API.md` (v1).
   browser only ever talks to its own origin, dodging mixed-content + private-IP
   + CORS. Direct mode (full URL in `API_BASE_URL`, no proxy) still works for
   LAN-only use. Don't revert the default to a hardcoded host URL.
-- **The browser sends the bearer token** on each request, and in same-origin
-  mode the token is still visible in client-side `/config.js`. For a publicly
-  reachable deployment, enforce real auth at the reverse proxy (Basic Auth /
-  access list), not the bearer token alone.
+- **Bearer token is injected server-side in proxy mode.** With `API_TOKEN` set,
+  the entrypoint decides where it goes based on `API_BASE_URL`: in same-origin
+  proxy mode (default, `/api`) it adds `proxy_set_header Authorization "Bearer …"`
+  to the `/api` block so the token **never reaches the browser** (`config.js`
+  keeps `API_TOKEN: ""`); in direct mode the browser must send it, so it lands in
+  `config.js` (prefer proxy mode for anything Internet-adjacent). `API_TOKEN`
+  must match the host's `api.token`. For a publicly reachable deployment, still
+  enforce real auth at the reverse proxy (Basic Auth / access list) on top.
 
 ## Gotchas
 

@@ -134,8 +134,18 @@ sudo ./uninstall.sh
 
 ## Security notes
 
+- **Set `api.token` whenever the API is reachable beyond localhost.** It binds
+  `0.0.0.0` by default; without a token, anything on the network can read your
+  metrics — and, if Server Logs is enabled, your **entire system journal**
+  (auth failures, IPs, anything apps log). The dashboard forwards the token; in
+  same-origin proxy mode it is injected server-side and never exposed to the
+  browser.
+- **Restrict `api.allowed_origins`** to your dashboard origin(s) on untrusted
+  networks (default `["*"]`). With no token, open CORS lets any website a user
+  on your network visits read the API cross-origin.
 - Bind the API to `127.0.0.1` if the dashboard runs on the same host; use
-  `0.0.0.0` only on a trusted LAN, ideally with the bearer token enabled.
+  `0.0.0.0` only on a trusted LAN.
 - The service runs as an unprivileged `marnarmon` user with systemd hardening
   (`ProtectSystem`, `ProtectHome`, `NoNewPrivileges`, restricted
-  `ReadWritePaths`).
+  `ReadWritePaths`). Enabling Server Logs adds one read-only capability:
+  membership in the `systemd-journal` group so the API can read the journal.

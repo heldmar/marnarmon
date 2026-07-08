@@ -51,10 +51,14 @@ container at start, so no rebuild needed to repoint it):
 | `LOGS_REFRESH_SECONDS` | `10` | Server Logs "Live" auto-refresh interval. Only relevant when the host has Server Logs enabled. |
 | `API_TOKEN` | _(empty)_ | Bearer token, only if the host API has auth enabled |
 
-The browser sends the token directly on each request. In same-origin mode the
-token still lands in `/config.js` (client-side), so for a publicly reachable
-deployment prefer enforcing access at the reverse proxy (Basic Auth / access
-list) rather than relying on the bearer token alone.
+`API_TOKEN` must match the host's `api.token`. In the default same-origin proxy
+mode the container **injects it into the `/api` Authorization header
+server-side**, so it never reaches the browser (`config.js` stays empty); set it
+as a stack/environment variable (in Portainer: the stack's *Environment
+variables*), never hardcoded in `docker-compose.yml`. In direct mode (full URL
+in `API_BASE_URL`) the browser must send it, so it lands in `config.js` — prefer
+proxy mode when the dashboard is Internet-reachable, and still enforce real auth
+at the reverse proxy (Basic Auth / access list) on top.
 
 ### Same-origin proxy (why `/api`)
 

@@ -9,8 +9,11 @@ major version and a new path prefix.
 - All responses are JSON.
 - **Auth:** if a bearer token is configured (`api.token` in `config.yml`), every
   endpoint except `/` requires `Authorization: Bearer <token>`. Otherwise no
-  auth is required.
-- **CORS:** `GET` is allowed from any origin so a browser dashboard can call it.
+  auth is required. **Set a token whenever the API is reachable beyond
+  localhost** — it is the only thing guarding metrics and, if enabled, the
+  system journal.
+- **CORS:** `GET` from the origins in `api.allowed_origins` (default `["*"]`).
+  Restrict it to the dashboard origin(s) on untrusted networks.
 - **Times:** all timestamps are Unix epoch **seconds** (integer, UTC).
 - **Bytes:** all sizes are bytes. Network rates are **bytes per second**,
   averaged over the interval since the previous sample.
