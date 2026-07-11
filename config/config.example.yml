@@ -86,3 +86,13 @@ docker:
   logs_default_tail: 200
   # Hard cap on lines tailed per container-logs request (server-side).
   logs_max_tail: 1000
+  # Pi-lightness cache TTLs (seconds). The dashboard polls /overview and /stacks
+  # together every few seconds; these keep that cheap. Set any to 0 to disable
+  # that cache (always fetch fresh) — only do so if you need the metric to react
+  # instantly and can spare the extra docker calls.
+  #   stats: the shared `docker ps` + `docker stats` snapshot both endpoints use.
+  stats_cache_seconds: 3.0
+  #   df: the slow `docker system df -v` used for real per-container/volume disk.
+  df_cache_seconds: 60.0
+  #   events: the `docker events` window behind the 24h restart count.
+  events_cache_seconds: 30.0

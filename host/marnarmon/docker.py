@@ -14,12 +14,17 @@ This module is only reachable when docker.enabled is true in config and the
 service user can reach the docker socket; otherwise the CLI returns a permission
 error which api.py turns into a friendly "daemon unreachable" banner.
 
-Cost note (this runs on a Pi): `docker stats` and `docker ps` are cheap; a
-single `docker stats --no-stream` is the heaviest of the three and is issued
-once per overview/stacks request. `docker system df -v` is comparatively slow,
-so it is fetched only where a per-container/volume disk breakdown is needed and
-tolerated as best-effort (parse failures degrade to "no breakdown", never a
-500).
+Cost note (this runs on a Pi): the live snapshot (`docker ps -a -s` +
+`docker stats --no-stream`) is fetched once per poll cycle and SHARED between
+/docker/overview and /docker/stacks via a short-TTL in-memory cache, so the two
+endpoints (fired together each cycle) don't shell out twice. The slow calls —
+`docker system df -v` (per-volume sizes) and `docker events` (24h restart
+history) — sit behind their own longer TTL caches, so they run only on cache
+expiry, not every 5s. Network/block rates are computed as in-memory deltas
+between successive snapshots (bytes/sec), mirroring how the host collector
+derives rates from consecutive SQLite samples. Every extra datum is best-effort:
+if inspect / df -v / events fails, that datum degrades (rate 0, volumes 0,
+restarts 0, limit None) and the endpoint still returns 200.
 """
 from __future__ import annotations
 
@@ -27,6 +32,8 @@ import json
 import os
 import re
 import subprocess
+import threading
+import time
 from typing import Dict, List, Optional, Sequence
 
 # The Compose labels docker writes on every container it creates. We group by
@@ -241,6 +248,30 @@ def build_inspect_args(container_ids: Sequence[str], docker_path: str = "docker"
     return [docker_path, "inspect", "--", *ids]
 
 
+def build_events_args(
+    since_epoch: float, until_epoch: float, docker_path: str = "docker"
+) -> List[str]:
+    """argv for a HISTORICAL (non-blocking) `docker events` query bounded by
+    --since/--until epoch seconds, filtered to container restart events. Without
+    --until, `docker events` would stream forever; the explicit window makes it
+    return the 24h restart history and exit. Epochs are ints (our own values,
+    never user input) so nothing untrusted reaches the argv."""
+    return [
+        docker_path,
+        "events",
+        "--since",
+        str(int(since_epoch)),
+        "--until",
+        str(int(until_epoch)),
+        "--filter",
+        "type=container",
+        "--filter",
+        "event=restart",
+        "--format",
+        "{{json .}}",
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # Output parsing (pure)
 # --------------------------------------------------------------------------- #
@@ -432,6 +463,116 @@ def _cpu_limit_cores(host_config: dict) -> Optional[float]:
     return None
 
 
+def parse_inspect_mounts(raw_stdout: str) -> Dict[str, List[str]]:
+    """Parse `docker inspect <ids…>` (a JSON array) into a map of container id ->
+    the names of its NAMED volumes. Bind mounts are ignored — `docker system df`
+    tracks sizes for named/anonymous volumes only. Keyed by both full and short
+    id, mirroring parse_inspect_cpu, so this reuses the SAME batched inspect call
+    (no extra subprocess). Tolerant: malformed/non-array input -> {}."""
+    try:
+        data = json.loads(raw_stdout)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    if not isinstance(data, list):
+        return {}
+
+    out: Dict[str, List[str]] = {}
+    for obj in data:
+        if not isinstance(obj, dict):
+            continue
+        cid = obj.get("Id") or obj.get("ID") or ""
+        if not cid:
+            continue
+        names: List[str] = []
+        for mount in obj.get("Mounts") or []:
+            if isinstance(mount, dict) and mount.get("Type") == "volume":
+                name = mount.get("Name")
+                if name:
+                    names.append(str(name))
+        out[cid] = names
+        out[cid[:12]] = names  # short id, to match ps -a's 12-char ids
+    return out
+
+
+def parse_df_verbose_volumes(raw_stdout: str) -> Dict[str, float]:
+    """Parse `docker system df -v --format {{json .}}` into {volume_name: bytes}.
+    The verbose form is a single JSON object with a `Volumes` array of
+    {Name, Size}. Used (cached, off the hot path) to attribute real on-disk
+    volume sizes to the containers that mount them. Tolerant: bad/empty input,
+    or a daemon that emits the sections as separate objects, degrade to {}."""
+    try:
+        data = json.loads(raw_stdout)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+    volumes: list = []
+    if isinstance(data, dict):
+        volumes = data.get("Volumes") or []
+    elif isinstance(data, list):
+        for section in data:
+            if isinstance(section, dict) and section.get("Volumes"):
+                volumes = section["Volumes"]
+                break
+
+    out: Dict[str, float] = {}
+    for vol in volumes or []:
+        if isinstance(vol, dict):
+            name = vol.get("Name")
+            if name:
+                out[str(name)] = parse_size(vol.get("Size"))
+    return out
+
+
+def count_restart_events(raw_stdout: str) -> int:
+    """Count container restart events from `docker events --format {{json .}}`.
+    The argv already filters to type=container / event=restart, so each parseable
+    line is one restart; we still re-check the Action field when present so an
+    older daemon that ignores the filter can't inflate the count. Tolerant."""
+    count = 0
+    for rec in _iter_json_lines(raw_stdout):
+        action = str(rec.get("Action") or rec.get("status") or "").lower()
+        if not action or "restart" in action:
+            count += 1
+    return count
+
+
+def compute_net_rates(
+    stats: Dict[str, dict], prev: Dict[str, tuple], now: float
+) -> tuple:
+    """Aggregate container network throughput as a bytes/sec RATE, derived from
+    the delta between two `docker stats` snapshots (docker's NetIO is cumulative
+    since container start — there is no per-interval rate in the CLI). Mirrors how
+    the host collector derives rates from consecutive SQLite samples.
+
+    Returns (rx_rate, tx_rate, new_prev) where new_prev is the {id: (rx, tx, t)}
+    map to store for the next poll. A container seen for the first time, or one
+    whose counter went backwards (it restarted -> cumulative resets), contributes
+    0 for this interval rather than a bogus spike. Vanished containers drop out
+    naturally (new_prev only contains currently-present ones)."""
+    rx_rate = 0.0
+    tx_rate = 0.0
+    new_prev: Dict[str, tuple] = {}
+    for entry in _unique_stats(stats):
+        cid = entry.get("id") or entry.get("name")
+        if not cid:
+            continue
+        rx = float(entry.get("net_rx", 0.0))
+        tx = float(entry.get("net_tx", 0.0))
+        new_prev[cid] = (rx, tx, now)
+        prior = prev.get(cid)
+        if not prior:
+            continue
+        prx, ptx, pt = prior
+        dt = now - pt
+        if dt <= 0:
+            continue
+        if rx >= prx:
+            rx_rate += (rx - prx) / dt
+        if tx >= ptx:
+            tx_rate += (tx - ptx) / dt
+    return rx_rate, tx_rate, new_prev
+
+
 # --------------------------------------------------------------------------- #
 # Grouping / aggregation (pure)
 # --------------------------------------------------------------------------- #
@@ -440,6 +581,7 @@ def group_stacks(
     stats: Dict[str, dict],
     host_mem_total: int,
     cpu_limits: Optional[Dict[str, Optional[float]]] = None,
+    volumes_by_container: Optional[Dict[str, float]] = None,
 ) -> List[dict]:
     """Join ps containers with their stats and group them into Compose stacks.
 
@@ -450,6 +592,9 @@ def group_stacks(
       single batched `docker inspect`, see stacks()). A container missing from
       the map (or mapped to None) has no CPU limit set -> cpu.percent = None and
       the UI hatches its meter, mirroring the memory no-limit case.
+    - `volumes_by_container` (id -> bytes) attributes real named-volume disk
+      usage (from the cached `docker system df -v`) to each container; absent it,
+      a container's disk is just its writable layer.
     - Stack health precedence: bad > warn > ok (one stopped container makes the
       whole stack badge bad).
     """
@@ -465,7 +610,10 @@ def group_stacks(
     stacks: List[dict] = []
     for key in order:
         members = buckets[key]
-        vms = [_container_vm(c, stats, host_mem_total, cpu_limits) for c in members]
+        vms = [
+            _container_vm(c, stats, host_mem_total, cpu_limits, volumes_by_container)
+            for c in members
+        ]
         stacks.append(_stack_vm(key, vms))
     return stacks
 
@@ -475,6 +623,7 @@ def _container_vm(
     stats: Dict[str, dict],
     host_mem_total: int,
     cpu_limits: Optional[Dict[str, Optional[float]]] = None,
+    volumes_by_container: Optional[Dict[str, float]] = None,
 ) -> dict:
     """Build the per-container view model (identity, state, mem/cpu/disk)."""
     st = stats.get(c["id"]) or stats.get(c["id"][:12]) or stats.get(c["name"]) or {}
@@ -498,7 +647,12 @@ def _container_vm(
         (used_cores / cpu_limit_cores * 100.0) if cpu_limit_cores else None
     )
 
-    volumes_bytes = 0.0  # per-volume sizes need `df -v`; filled in by api when asked
+    # Real named-volume footprint from the cached `docker system df -v`, joined
+    # by the volume names inspect reported for this container. 0 when df -v hasn't
+    # been fetched (or the container mounts none), so disk falls back to the
+    # writable layer alone — never a crash.
+    vols = volumes_by_container or {}
+    volumes_bytes = float(vols.get(c["id"]) or vols.get(c["id"][:12]) or 0.0)
     disk_bytes = float(c["rw_bytes"]) + volumes_bytes
 
     return {
@@ -566,19 +720,24 @@ def build_overview(
     host_mem_total: int,
     host_cores: int,
     host_disk_total: int,
+    net_rx_rate: float = 0.0,
+    net_tx_rate: float = 0.0,
+    restarts_24h: int = 0,
 ) -> dict:
     """Aggregate CPU/RAM/disk totals + quick-stat counts across all containers.
 
     The gauges here are HOST PRESSURE (percent of host cores / RAM / disk), so
     percentages are computed against the host references — unlike the per-
     container meters, which are relative.
+
+    `net_rx_rate`/`net_tx_rate` (bytes/sec) and `restarts_24h` are supplied by the
+    caller: they need cross-request state (the previous stats sample) / a separate
+    `docker events` query, which live in the I/O layer, not this pure function.
     """
     stacks = group_stacks(containers, stats, host_mem_total)
 
     cpu_cores = sum(s.get("cpu_percent", 0.0) for s in _unique_stats(stats)) / 100.0
     mem_used = sum(s.get("mem_used", 0.0) for s in _unique_stats(stats))
-    net_rx = sum(s.get("net_rx", 0.0) for s in _unique_stats(stats))
-    net_tx = sum(s.get("net_tx", 0.0) for s in _unique_stats(stats))
 
     images_bytes = df.get("images", {}).get("size_bytes", 0.0)
     volumes_bytes = df.get("volumes", {}).get("size_bytes", 0.0)
@@ -588,7 +747,6 @@ def build_overview(
     running = sum(1 for c in containers if c["state_raw"].lower() == "running")
     stopped = len(containers) - running
     unhealthy = sum(1 for c in containers if c["health"] == "unhealthy")
-    restarting = sum(1 for c in containers if c["state_raw"].lower() == "restarting")
 
     host_cores = host_cores or 1
     return {
@@ -618,13 +776,13 @@ def build_overview(
             "total": len(containers),
             "stacks": len(stacks),
             "unhealthy": unhealthy,
-            # docker stats NetIO is cumulative-since-start, not a per-interval
-            # rate (no docker history is stored); surfaced as-is, best-effort.
-            "net_rx_rate": net_rx,
-            "net_tx_rate": net_tx,
-            # True 24h restart history needs `docker events`; we surface the
-            # count of currently-restarting containers as a cheap proxy.
-            "restarts_24h": restarting,
+            # Live throughput as a bytes/sec rate, from the in-memory delta
+            # between successive `docker stats` snapshots (see compute_net_rates).
+            "net_rx_rate": net_rx_rate,
+            "net_tx_rate": net_tx_rate,
+            # True count of container restart events in the last 24h, from a
+            # cached `docker events` window (see count_restart_events).
+            "restarts_24h": restarts_24h,
         },
     }
 
@@ -736,23 +894,161 @@ def _run_logs(args: Sequence[str], timeout_seconds: float) -> str:
     return (proc.stdout or "") + (proc.stderr or "")
 
 
-def _collect(docker_path: str, timeout_seconds: float, *, with_df: bool):
-    """Fetch and parse the shared inputs (ps + stats, and optionally the cheap
-    summary df). One place so overview and stacks don't diverge."""
-    containers = parse_ps(_run(build_ps_args(docker_path), timeout_seconds))
-    stats = parse_stats(_run(build_stats_args(docker_path), timeout_seconds))
-    df: Dict[str, dict] = {}
-    if with_df:
-        df = parse_system_df(_run(build_system_df_args(docker_path), timeout_seconds))
-    return containers, stats, df
+# --------------------------------------------------------------------------- #
+# In-memory caches (Pi-lightness) + net-rate history
+#
+# /docker/overview and /docker/stacks are polled together every few seconds. To
+# avoid shelling out twice for the same data — and to keep the genuinely slow
+# calls (`docker system df -v`, `docker events`) off the hot path — the wrappers
+# memoize behind short TTLs. A cache_seconds of 0 disables caching entirely
+# (fresh every call): that's the default so unit tests are deterministic and the
+# API opts in with real TTLs from config. All state is guarded by one lock.
+# --------------------------------------------------------------------------- #
+_CACHE_LOCK = threading.Lock()
+_snapshot_cache: dict = {"data": None, "at": 0.0}
+_df_volumes_cache: dict = {"data": None, "at": 0.0}
+_restarts_cache: dict = {"data": None, "at": 0.0}
+_net_prev: Dict[str, tuple] = {}
+
+
+def reset_cache() -> None:
+    """Drop every in-memory cache and the net-rate history. Call on config reload
+    or from tests to guarantee a cold start."""
+    with _CACHE_LOCK:
+        _snapshot_cache["data"] = None
+        _df_volumes_cache["data"] = None
+        _restarts_cache["data"] = None
+        _net_prev.clear()
+
+
+def _cached(slot: dict, cache_seconds: float, produce):
+    """Return slot['data'] if fresher than cache_seconds, else call produce() and
+    store it. produce() runs OUTSIDE the lock (it does subprocess I/O); only the
+    tiny read/write of the slot is locked. cache_seconds <= 0 bypasses the cache
+    (always fresh, nothing stored)."""
+    if cache_seconds > 0:
+        now = time.monotonic()
+        with _CACHE_LOCK:
+            if slot["data"] is not None and (now - slot["at"]) < cache_seconds:
+                return slot["data"]
+    data = produce()
+    if cache_seconds > 0:
+        with _CACHE_LOCK:
+            slot["data"] = data
+            slot["at"] = time.monotonic()
+    return data
+
+
+def _get_snapshot(docker_path: str, timeout_seconds: float, cache_seconds: float):
+    """The shared (containers, stats) snapshot — `docker ps -a -s` + `docker
+    stats`. Memoized so overview and stacks in the same poll cycle don't each run
+    the heavy `docker stats`."""
+    def produce():
+        containers = parse_ps(_run(build_ps_args(docker_path), timeout_seconds))
+        stats = parse_stats(_run(build_stats_args(docker_path), timeout_seconds))
+        return containers, stats
+
+    return _cached(_snapshot_cache, cache_seconds, produce)
+
+
+def _net_rates(stats: Dict[str, dict], active: bool) -> tuple:
+    """Aggregate net rx/tx rate (bytes/sec) from the delta vs the last poll.
+    Requires cross-poll state, so it only runs when caching is active (prod);
+    without it (tests) there is no prior sample to diff against -> (0, 0), and no
+    module state is touched."""
+    if not active:
+        return 0.0, 0.0
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        rx, tx, new_prev = compute_net_rates(stats, _net_prev, now)
+        _net_prev.clear()
+        _net_prev.update(new_prev)
+    return rx, tx
+
+
+def _get_restarts_24h(
+    docker_path: str, timeout_seconds: float, cache_seconds: float
+) -> int:
+    """True count of container restart events in the last 24h via a historical
+    `docker events` query. Cached (it changes slowly) and best-effort: any
+    failure degrades to 0 rather than breaking /overview."""
+    def produce():
+        wall = time.time()
+        try:
+            raw = _run(
+                build_events_args(wall - 86400, wall, docker_path), timeout_seconds
+            )
+        except DockerError:
+            return 0
+        return count_restart_events(raw)
+
+    return _cached(_restarts_cache, cache_seconds, produce)
+
+
+def _get_volume_sizes(
+    docker_path: str, timeout_seconds: float, cache_seconds: float
+) -> Dict[str, float]:
+    """{volume_name: bytes} from the slow `docker system df -v`, cached to keep it
+    off the hot path. Best-effort: failure -> {} (disk falls back to the writable
+    layer only)."""
+    def produce():
+        try:
+            raw = _run(
+                build_system_df_args(docker_path, verbose=True), timeout_seconds
+            )
+        except DockerError:
+            return {}
+        return parse_df_verbose_volumes(raw)
+
+    return _cached(_df_volumes_cache, cache_seconds, produce)
+
+
+def _inspect(
+    containers: List[dict], docker_path: str, timeout_seconds: float
+) -> tuple:
+    """One batched `docker inspect` over all container ids, parsed for BOTH the
+    per-container CPU limits and the named volumes each mounts (two views of the
+    same call — no extra subprocess). Best-effort: any failure degrades to empty
+    maps so /docker/stacks still returns (CPU meters hatch, volumes read 0)."""
+    ids = [c["id"] for c in containers if c.get("id")]
+    if not ids:
+        return {}, {}
+    try:
+        raw = _run(build_inspect_args(ids, docker_path), timeout_seconds)
+    except DockerError:
+        return {}, {}
+    return parse_inspect_cpu(raw), parse_inspect_mounts(raw)
+
+
+def _container_volume_bytes(
+    mounts: Dict[str, List[str]], sizes: Dict[str, float]
+) -> Dict[str, float]:
+    """Join inspect's per-container volume NAMES with df -v's per-volume SIZES to
+    get a container-id -> total-volume-bytes map. A volume missing from df -v
+    contributes 0."""
+    out: Dict[str, float] = {}
+    for cid, names in mounts.items():
+        out[cid] = sum(sizes.get(n, 0.0) for n in names)
+    return out
 
 
 def overview(
     docker_path: str = "docker",
     timeout_seconds: float = 8.0,
+    *,
+    stats_cache_seconds: float = 0.0,
+    events_cache_seconds: float = 0.0,
 ) -> dict:
-    """Aggregate host-pressure gauges + quick-stat counts across all containers."""
-    containers, stats, df = _collect(docker_path, timeout_seconds, with_df=True)
+    """Aggregate host-pressure gauges + quick-stat counts across all containers.
+
+    Hot-path subprocesses: `ps` + `stats` (shared snapshot) + the cheap summary
+    `df`. Net throughput is a rate from the in-memory delta (no extra call);
+    `restarts_24h` comes from a cached `docker events` (only re-run on TTL
+    expiry). Net-rate tracking is active only when the snapshot is cached."""
+    containers, stats = _get_snapshot(docker_path, timeout_seconds, stats_cache_seconds)
+    df = parse_system_df(_run(build_system_df_args(docker_path), timeout_seconds))
+    net_rx_rate, net_tx_rate = _net_rates(stats, active=stats_cache_seconds > 0)
+    restarts_24h = _get_restarts_24h(docker_path, timeout_seconds, events_cache_seconds)
     return build_overview(
         containers,
         stats,
@@ -760,40 +1056,37 @@ def overview(
         host_mem_total=_host_mem_total_bytes(),
         host_cores=os.cpu_count() or 1,
         host_disk_total=_host_disk_total_bytes(),
+        net_rx_rate=net_rx_rate,
+        net_tx_rate=net_tx_rate,
+        restarts_24h=restarts_24h,
     )
-
-
-def _inspect_cpu_limits(
-    containers: List[dict], docker_path: str, timeout_seconds: float
-) -> Dict[str, Optional[float]]:
-    """One batched `docker inspect` over all known container ids -> id->cores map.
-    Best-effort: any failure (daemon hiccup, bad id, timeout) degrades to an
-    empty map so the CPU meters simply hatch as 'no limit' — never breaks the
-    /docker/stacks endpoint."""
-    ids = [c["id"] for c in containers if c.get("id")]
-    if not ids:
-        return {}
-    try:
-        args = build_inspect_args(ids, docker_path)
-        return parse_inspect_cpu(_run(args, timeout_seconds))
-    except DockerError:
-        return {}
 
 
 def stacks(
     docker_path: str = "docker",
     timeout_seconds: float = 8.0,
+    *,
+    stats_cache_seconds: float = 0.0,
+    df_cache_seconds: float = 0.0,
 ) -> List[dict]:
     """Per-Compose-project stacks with their containers and resource meters.
 
-    Three subprocesses total: `ps` + `stats` (via _collect) + one batched
-    `docker inspect` for the per-container CPU limits. Skips the slow `df -v`;
-    per-container disk is the writable-layer size from `ps -s` (volume footprints
-    would require `df -v` and are left at 0 for the Pi-friendly default path).
-    """
-    containers, stats, _ = _collect(docker_path, timeout_seconds, with_df=False)
-    cpu_limits = _inspect_cpu_limits(containers, docker_path, timeout_seconds)
-    return group_stacks(containers, stats, _host_mem_total_bytes(), cpu_limits)
+    Hot path: the shared `ps` + `stats` snapshot + one batched `docker inspect`
+    (CPU limits AND volume names in a single call). Real per-container volume
+    sizes come from `docker system df -v`, which is CACHED (df_cache_seconds) so
+    the slow call stays off the every-few-seconds path — on a cache hit stacks
+    costs the same three subprocesses as before."""
+    containers, stats = _get_snapshot(docker_path, timeout_seconds, stats_cache_seconds)
+    cpu_limits, volume_mounts = _inspect(containers, docker_path, timeout_seconds)
+    volume_sizes = _get_volume_sizes(docker_path, timeout_seconds, df_cache_seconds)
+    volumes_by_container = _container_volume_bytes(volume_mounts, volume_sizes)
+    return group_stacks(
+        containers,
+        stats,
+        _host_mem_total_bytes(),
+        cpu_limits,
+        volumes_by_container,
+    )
 
 
 def container_logs(

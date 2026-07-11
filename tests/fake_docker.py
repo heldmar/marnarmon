@@ -13,6 +13,7 @@ It recognizes the argv shapes docker.py builds:
     docker system df [--format {{json .}}]
     docker system df -v --format {{json .}}
     docker inspect -- <id1> <id2> …
+    docker events --since … --until … --filter … --format {{json .}}
     docker logs --tail N [--timestamps] [--since=…] -- <container>
 
 Behavior is tunable through env vars so a single stub can act out the daemon-
@@ -23,6 +24,8 @@ unreachable / bad-container / timeout paths the wrappers must handle:
     FAKE_DOCKER_LOGS_STDERR=1  -> `docker logs` writes to stderr (legit log output)
     FAKE_DOCKER_INSPECT_FAIL=1 -> `docker inspect` exits 1 (stacks() must still
                                   return, with CPU limits degraded to None)
+    FAKE_DOCKER_EVENTS_FAIL=1  -> `docker events` exits 1 (restarts_24h must
+                                  degrade to 0, overview must still return)
     FAKE_DOCKER_HANG=1         -> sleep well past any test timeout (TimeoutExpired)
 """
 import os
@@ -58,9 +61,18 @@ SYSTEM_DF = """{"Type":"Images","TotalCount":"5","Active":"3","Size":"1.2GB","Re
 """
 
 # `docker system df -v --format {{json .}}`: verbose form is a single JSON object
-# with nested arrays. docker.py doesn't parse this on the hot path; provided so a
-# test can prove the -v argv shape is only ever built when explicitly requested.
-SYSTEM_DF_V = """{"Images":[{"Repository":"nginx","Tag":"latest","Size":"180MB"}],"Containers":[{"Names":"shop_web_1","Size":"180MB"}],"Volumes":[{"Name":"shop_dbdata","Size":"512MB"}],"BuildCache":[]}
+# with nested arrays. Cached (off the hot path); the Volumes array gives the real
+# per-volume sizes that get attributed to the container mounting each volume.
+SYSTEM_DF_V = """{"Images":[{"Repository":"nginx","Tag":"latest","Size":"180MB"}],"Containers":[{"Names":"shop_web_1","Size":"180MB"}],"Volumes":[{"Name":"shop_dbdata","Size":"512MB"},{"Name":"unused_vol","Size":"7MB"}],"BuildCache":[]}
+"""
+
+# `docker events --format {{json .}}` over the 24h window: one JSON object per
+# container restart event. The db restarted twice, web once -> count 3. A blank
+# line the parser must skip.
+EVENTS = """{"Type":"container","Action":"restart","Actor":{"Attributes":{"name":"shop_db_1"}}}
+{"Type":"container","Action":"restart","Actor":{"Attributes":{"name":"shop_web_1"}}}
+
+{"Type":"container","Action":"restart","Actor":{"Attributes":{"name":"shop_db_1"}}}
 """
 
 # `docker inspect <ids…>` output: a JSON array (docker returns one array for the
@@ -69,9 +81,9 @@ SYSTEM_DF_V = """{"Images":[{"Repository":"nginx","Tag":"latest","Size":"180MB"}
 # CpuQuota with an unset period defaulting to 100000 (old_worker, 2.0 cores), and
 # no limit at all (lonely -> None).
 INSPECT = """[
-  {"Id":"aaaaaaaaaaaa","HostConfig":{"NanoCpus":1500000000,"CpuQuota":0,"CpuPeriod":0}},
-  {"Id":"bbbbbbbbbbbb","HostConfig":{"NanoCpus":0,"CpuQuota":50000,"CpuPeriod":100000}},
-  {"Id":"cccccccccccc","HostConfig":{"NanoCpus":0,"CpuQuota":0,"CpuPeriod":0}},
+  {"Id":"aaaaaaaaaaaa","HostConfig":{"NanoCpus":1500000000,"CpuQuota":0,"CpuPeriod":0},"Mounts":[{"Type":"bind","Source":"/etc/nginx","Destination":"/etc/nginx"}]},
+  {"Id":"bbbbbbbbbbbb","HostConfig":{"NanoCpus":0,"CpuQuota":50000,"CpuPeriod":100000},"Mounts":[{"Type":"volume","Name":"shop_dbdata","Destination":"/var/lib/postgresql/data"}]},
+  {"Id":"cccccccccccc","HostConfig":{"NanoCpus":0,"CpuQuota":0,"CpuPeriod":0},"Mounts":[]},
   {"Id":"dddddddddddd","HostConfig":{"NanoCpus":0,"CpuQuota":200000,"CpuPeriod":0}}
 ]
 """
@@ -133,6 +145,13 @@ def main(argv):
             sys.stderr.write("Error: inspect failed\n")
             return 1
         _emit(INSPECT)
+        return 0
+
+    if sub == "events":
+        if os.environ.get("FAKE_DOCKER_EVENTS_FAIL"):
+            sys.stderr.write("Error: events failed\n")
+            return 1
+        _emit(EVENTS)
         return 0
 
     if sub == "system" and len(args) >= 2 and args[1] == "df":

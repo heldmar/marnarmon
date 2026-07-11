@@ -259,8 +259,11 @@ Server Logs). Every size is bytes; CPU is expressed as cores (`100%` of a
 ### `GET /docker/overview`
 
 Aggregate host-pressure gauges (percent of host cores / RAM / disk) plus
-quick-stat counts across every container. Issues three docker subprocesses
-(`ps`, `stats`, and a cheap summary `system df`).
+quick-stat counts across every container. Hot-path cost is three docker
+subprocesses (`ps`, `stats`, and a cheap summary `system df`); the `ps` + `stats`
+snapshot is shared with `/docker/stacks` (see below). The 24h restart count adds
+a `docker events` call only when its cache (`docker.events_cache_seconds`) has
+expired.
 
 ```json
 {
@@ -292,26 +295,37 @@ quick-stat counts across every container. Issues three docker subprocesses
 }
 ```
 
-Field notes and honest caveats:
+Field notes:
 
 - `totals.cpu` / `totals.mem` / `totals.disk` are **host pressure**: percentages
   are computed against the host's core count, `/proc/meminfo` total, and the
   size of the filesystem backing docker (`statvfs` of `/`).
 - `totals.disk` is the sum of the docker `images` / `volumes` / `containers`
   buckets from the summary `system df` (each also surfaced individually).
-- `stats.net_rx_rate` / `stats.net_tx_rate` are **cumulative-since-container-start**
-  byte counts summed across containers, surfaced best-effort as if a rate —
-  `docker stats` exposes no per-interval network rate and no history is stored.
-- `stats.restarts_24h` is a **proxy**: the count of containers *currently*
-  restarting, not a true 24-hour history (which would need `docker events`).
+- `stats.net_rx_rate` / `stats.net_tx_rate` are a real **bytes/sec rate**, derived
+  as the in-memory delta between successive `docker stats` snapshots (docker's
+  NetIO is cumulative-since-start, so the API differences consecutive polls the
+  same way the host collector differences SQLite samples). The first poll after
+  start — and any container that just restarted (its counter reset) — contributes
+  `0` for that interval rather than a bogus spike; no extra subprocess is needed.
+- `stats.restarts_24h` is a **true count** of container restart events in the last
+  24 hours, from a `docker events --since 24h` window. That query is cached
+  (`docker.events_cache_seconds`, default 30s) so it stays off the hot path;
+  best-effort — if it fails the count degrades to `0` and the endpoint still 200s.
 - When `docker_ok` is `false`, `totals` and `stats` are `null`.
 
 ### `GET /docker/stacks`
 
 Per-Compose-project stacks, each with its containers and resource meters.
 Containers with no Compose project label are grouped under an `"ungrouped"`
-stack. Issues three docker subprocesses (`ps`, `stats`, and a single batched
-`docker inspect` over all container ids for the per-container CPU limits).
+stack. Hot-path cost is three docker subprocesses (`ps`, `stats`, and a single
+batched `docker inspect` over all container ids — reused for both the
+per-container CPU limits and the volume names). Real volume sizes come from
+`docker system df -v`, which is **cached** (`docker.df_cache_seconds`, default
+60s) so the slow call only re-runs on cache expiry, not every poll. The `ps` +
+`stats` snapshot is itself shared with `/docker/overview` within
+`docker.stats_cache_seconds` (default 3s), so the two endpoints polled together
+don't each shell out to `docker stats`.
 
 ```json
 {
@@ -340,7 +354,7 @@ stack. Issues three docker subprocesses (`ps`, `stats`, and a single batched
           "health": "healthy",
           "mem":  { "used_bytes": 268435456, "limit_bytes": 536870912, "percent": 50.0 },
           "cpu":  { "used_cores": 0.12, "used_percent": 12.0, "limit_cores": 1.5, "percent": 8.0 },
-          "disk": { "bytes": 188743680, "rw_bytes": 188743680, "volumes_bytes": 0, "local_volumes": 2 }
+          "disk": { "bytes": 725614592, "rw_bytes": 188743680, "volumes_bytes": 536870912, "local_volumes": 2 }
         }
       ]
     }
@@ -372,10 +386,14 @@ Field notes and honest caveats:
   If the inspect call fails for any reason the endpoint still returns 200 with
   the limits degraded to `null`. `cpu.used_cores` / `cpu.used_percent` (usage)
   are always populated.
-- **Per-container volume disk is `0`** on this default lightweight path:
-  `disk.bytes`/`rw_bytes` are the container's writable-layer size from `ps -s`
-  and `volumes_bytes` is `0`. Full volume accounting needs the slow
-  `docker system df -v`, deliberately kept off the hot path. `local_volumes` is
+- **Per-container disk includes volumes**: `disk.rw_bytes` is the writable-layer
+  size from `ps -s`; `disk.volumes_bytes` is the real on-disk size of the
+  container's named volumes, joined from the batched `docker inspect` (which
+  volumes it mounts) and the cached `docker system df -v` (each volume's size);
+  `disk.bytes` is their sum. Because `df -v` is cached (see above), this stays
+  Pi-light. Best-effort: if `inspect` or `df -v` fails, `volumes_bytes` degrades
+  to `0` (disk falls back to the writable layer) and the endpoint still 200s.
+  Bind mounts are excluded (docker tracks no size for them). `local_volumes` is
   the count of attached local volumes.
 
 ### `GET /docker/logs`

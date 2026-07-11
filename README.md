@@ -33,13 +33,15 @@ consumes the same API.
   containers), per-Compose-stack and per-container **RAM and CPU** used-vs-limit
   meters, an informational per-container **disk** footprint meter, and a live
   per-container **log** drawer. Metrics are read live per request via the
-  `docker` CLI (`stats` / `ps` / `system df` / `logs`) — nothing is stored.
-  A few readings are deliberately best-effort on a Pi: per-container **CPU
-  limits** aren't shown (docker doesn't expose them cheaply), network I/O is
-  cumulative-since-start rather than a true rate, "Restarts (24h)" counts
-  currently-restarting containers, and per-container volume disk needs the slow
-  `docker system df -v` so it is left out of the default path (see [`API.md`](API.md)
-  for the exact per-field caveats). **Off by default** — opt in during
+  `docker` CLI (`stats` / `ps` / `system df` / `logs` / `inspect` / `events`) —
+  nothing is stored. Readings are real, not approximations: per-container **CPU
+  limits** (from a single batched `inspect`), network I/O as a true **bytes/sec
+  rate** (in-memory delta between polls), a true **24h restart** count (from
+  `docker events`), and per-container **disk including named volumes**. To stay
+  light on a Pi, the shared `ps`+`stats` snapshot and the slow `df -v` / `events`
+  calls are cached with short, configurable TTLs so the every-few-seconds path
+  costs only `ps` + `stats` + `inspect` (see [`API.md`](API.md) for exact
+  per-field semantics and the cache knobs). **Off by default** — opt in during
   `install.sh` (which adds the service user to the `docker` group) or follow the
   [`host/DOCKER_MONITOR_DEPLOY.md`](host/DOCKER_MONITOR_DEPLOY.md) runbook to
   enable it on an already-running install.

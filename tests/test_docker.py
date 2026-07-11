@@ -706,6 +706,169 @@ def test_api_docker_logs_bad_container_rejected():
 
 
 # --------------------------------------------------------------------------- #
+# Net rate, volume disk, restart count, caching (transparency upgrades)
+# --------------------------------------------------------------------------- #
+def test_compute_net_rates():
+    """Aggregate net throughput is a bytes/sec delta between two stats snapshots;
+    first sight and counter resets contribute 0, vanished containers drop out."""
+    s1 = D.parse_stats(STATS)
+    rx, tx, prev = D.compute_net_rates(s1, {}, now=100.0)
+    check("first poll rx 0 (no prior sample)", rx == 0.0)
+    check("first poll tx 0", tx == 0.0)
+    check("prev captured for all present", set(prev.keys()) == {"aaaaaaaaaaaa", "bbbbbbbbbbbb"})
+
+    # Second poll 10s later: web rx grew 1.2kB -> 11.2kB (=10kB over 10s = 1000 B/s).
+    s2 = D.parse_stats(
+        '{"ID":"aaaaaaaaaaaa","Name":"shop_web_1","CPUPerc":"1%","MemUsage":"1MiB / 2MiB",'
+        '"MemPerc":"1%","NetIO":"11.2kB / 3.4kB","BlockIO":"0B / 0B"}\n'
+    )
+    rx2, tx2, prev2 = D.compute_net_rates(s2, prev, now=110.0)
+    check("rx rate = delta/dt", abs(rx2 - 1000.0) < 1e-6)
+    check("tx unchanged -> 0 rate", tx2 == 0.0)
+    check("prev pruned to present container only", set(prev2.keys()) == {"aaaaaaaaaaaa"})
+
+    # Counter went backwards (container restarted) -> 0, never negative.
+    s3 = D.parse_stats(
+        '{"ID":"aaaaaaaaaaaa","Name":"shop_web_1","CPUPerc":"1%","MemUsage":"1MiB / 2MiB",'
+        '"MemPerc":"1%","NetIO":"200B / 3.4kB","BlockIO":"0B / 0B"}\n'
+    )
+    rx3, _, _ = D.compute_net_rates(s3, prev2, now=120.0)
+    check("counter reset clamps to 0", rx3 == 0.0)
+
+
+LONGID = "b" * 64
+INSPECT_MOUNTS = (
+    '[{"Id":"%s","Mounts":[{"Type":"bind","Source":"/x","Destination":"/x"},'
+    '{"Type":"volume","Name":"dbdata","Destination":"/d"},'
+    '{"Type":"volume","Name":"logs","Destination":"/l"}]},'
+    '{"Id":"cccccccccccc"}]' % LONGID
+)
+
+
+def test_parse_inspect_mounts():
+    m = D.parse_inspect_mounts(INSPECT_MOUNTS)
+    check("bind mounts ignored, named volumes kept", m[LONGID] == ["dbdata", "logs"])
+    check("keyed by short id too", m[LONGID[:12]] == ["dbdata", "logs"])
+    check("container with no Mounts -> []", m["cccccccccccc"] == [])
+    check("bad input -> {}", D.parse_inspect_mounts("x") == {})
+    check("non-array -> {}", D.parse_inspect_mounts('{"Id":"z"}') == {})
+
+
+def test_parse_df_verbose_volumes():
+    raw = '{"Volumes":[{"Name":"shop_dbdata","Size":"512MB"},{"Name":"cache","Size":"7MiB"}]}'
+    vols = D.parse_df_verbose_volumes(raw)
+    check("volume size parsed (SI)", vols["shop_dbdata"] == 512 * 1000 ** 2)
+    check("second volume (binary)", abs(vols["cache"] - 7 * 1024 ** 2) < 1)
+    check("bad input -> {}", D.parse_df_verbose_volumes("nonsense") == {})
+    check("empty -> {}", D.parse_df_verbose_volumes("") == {})
+
+
+def test_count_restart_events():
+    raw = (
+        '{"Type":"container","Action":"restart"}\n\n'
+        '{"Type":"container","Action":"restart"}\n'
+        '{"Type":"container","Action":"die"}\n'
+    )
+    check("counts only restart actions", D.count_restart_events(raw) == 2)
+    check("empty -> 0", D.count_restart_events("") == 0)
+    # Filter is applied in the argv; a line with no Action is still a restart.
+    check("no-action line counted", D.count_restart_events('{"Type":"container"}\n') == 1)
+
+
+def test_build_events_args():
+    a = D.build_events_args(1000, 2000, "docker")
+    check("events subcommand", a[:2] == ["docker", "events"])
+    check("since/until epochs as ints", "--since" in a and "1000" in a and "2000" in a)
+    check("filtered to container restart", "type=container" in a and "event=restart" in a)
+
+
+def test_build_overview_net_and_restarts():
+    ov = D.build_overview(
+        [], {}, {}, host_mem_total=HOST_MEM, host_cores=4, host_disk_total=100 * 1000 ** 3,
+        net_rx_rate=1500.0, net_tx_rate=250.0, restarts_24h=7,
+    )
+    check("net rx rate passthrough", ov["stats"]["net_rx_rate"] == 1500.0)
+    check("net tx rate passthrough", ov["stats"]["net_tx_rate"] == 250.0)
+    check("restarts passthrough", ov["stats"]["restarts_24h"] == 7)
+    dflt = D.build_overview([], {}, {}, host_mem_total=HOST_MEM, host_cores=4, host_disk_total=1)
+    check("defaults to 0 restarts", dflt["stats"]["restarts_24h"] == 0)
+    check("defaults to 0 rate", dflt["stats"]["net_rx_rate"] == 0.0)
+
+
+def test_container_volume_disk():
+    """Named-volume bytes join into each container's disk + the stack rollup."""
+    containers = D.parse_ps(PS)
+    stats = D.parse_stats(STATS)
+    vols = {"bbbbbbbbbbbb": 512 * 1000 ** 2}  # db's volume total
+    stacks = D.group_stacks(containers, stats, HOST_MEM, None, vols)
+    shop = next(s for s in stacks if s["name"] == "shop")
+    db = next(c for c in shop["containers"] if c["name"] == "shop_db_1")
+    check("db volume bytes attributed", db["disk"]["volumes_bytes"] == 512 * 1000 ** 2)
+    check("db disk = rw layer + volumes",
+          abs(db["disk"]["bytes"] - (40 * 1000 ** 2 + 512 * 1000 ** 2)) < 1)
+    web = next(c for c in shop["containers"] if c["name"] == "shop_web_1")
+    check("web has no volume -> 0", web["disk"]["volumes_bytes"] == 0.0)
+    check("stack disk rollup includes the volume", shop["disk_bytes"] >= 512 * 1000 ** 2)
+
+
+def test_cache_layer():
+    """_cached: TTL 0 always produces (nothing stored); TTL>0 memoizes."""
+    slot = {"data": None, "at": 0.0}
+    calls = {"n": 0}
+
+    def produce():
+        calls["n"] += 1
+        return calls["n"]
+
+    check("ttl0 produces", D._cached(slot, 0, produce) == 1)
+    check("ttl0 produces again", D._cached(slot, 0, produce) == 2)
+    check("ttl0 stores nothing", slot["data"] is None)
+    check("ttl produce first", D._cached(slot, 100, produce) == 3)
+    check("ttl reuses cached", D._cached(slot, 100, produce) == 3)
+    check("ttl stored the value", slot["data"] == 3)
+
+
+def test_overview_and_stacks_caching_end_to_end(tmp_path=None):
+    """With caching active: /overview counts real restarts, first-poll net rate is
+    0, and /stacks reports real per-container volume disk from `df -v`."""
+    import tempfile
+    tmp = str(tmp_path) if tmp_path is not None else tempfile.mkdtemp()
+    docker = _fake_docker_path(tmp)
+    D.reset_cache()
+    try:
+        ov = D.overview(docker_path=docker, timeout_seconds=8.0,
+                        stats_cache_seconds=30.0, events_cache_seconds=30.0)
+        check("restarts_24h from docker events", ov["stats"]["restarts_24h"] == 3)
+        check("first-poll net rx rate 0", ov["stats"]["net_rx_rate"] == 0.0)
+
+        st = D.stacks(docker_path=docker, timeout_seconds=8.0,
+                      stats_cache_seconds=30.0, df_cache_seconds=60.0)
+        shop = next(s for s in st if s["name"] == "shop")
+        db = next(c for c in shop["containers"] if c["name"] == "shop_db_1")
+        check("db real volume disk via df -v", db["disk"]["volumes_bytes"] == 512 * 1000 ** 2)
+        web = next(c for c in shop["containers"] if c["name"] == "shop_web_1")
+        check("web (bind mount only) volume disk 0", web["disk"]["volumes_bytes"] == 0.0)
+    finally:
+        D.reset_cache()
+
+
+def test_overview_events_failure_degrades(tmp_path=None):
+    """A failing `docker events` degrades restarts_24h to 0 — overview still 200s."""
+    import tempfile
+    tmp = str(tmp_path) if tmp_path is not None else tempfile.mkdtemp()
+    docker = _fake_docker_path(tmp)
+    D.reset_cache()
+    os.environ["FAKE_DOCKER_EVENTS_FAIL"] = "1"
+    try:
+        ov = D.overview(docker_path=docker, timeout_seconds=8.0)
+        check("events fail -> restarts 0", ov["stats"]["restarts_24h"] == 0)
+        check("overview still returns totals", "totals" in ov and "stats" in ov)
+    finally:
+        os.environ.pop("FAKE_DOCKER_EVENTS_FAIL", None)
+        D.reset_cache()
+
+
+# --------------------------------------------------------------------------- #
 # Bare runner (no pytest) — mirrors test_logs.py main().
 # --------------------------------------------------------------------------- #
 def main():
@@ -743,6 +906,16 @@ def main():
         test_api_docker_requires_token,
         test_api_docker_overview_shape_with_token,
         test_api_docker_logs_bad_container_rejected,
+        test_compute_net_rates,
+        test_parse_inspect_mounts,
+        test_parse_df_verbose_volumes,
+        test_count_restart_events,
+        test_build_events_args,
+        test_build_overview_net_and_restarts,
+        test_container_volume_disk,
+        test_cache_layer,
+        test_overview_and_stacks_caching_end_to_end,
+        test_overview_events_failure_degrades,
     ]
     print("Running MarNarMon docker tests...")
     for t in tests:
