@@ -30,8 +30,8 @@ restricted CORS) from the Server Logs phase. So before enabling, confirm:
 - `api.allowed_origins` is restricted to your dashboard origin(s), not `["*"]`,
   if the API is reachable from untrusted networks.
 
-If the token is empty, **do not enable this** until you have set one (re-run
-`install.sh` and opt into token auth, or edit the config and restart).
+If the token is empty, **do not enable this** until you have set one (set
+`api.token` in the config and restart the API).
 
 Check the current token/bind before you start:
 
@@ -41,32 +41,31 @@ sudo grep -E '^\s*(host|port|token|allowed_origins):' /etc/marnarmon/config.yml
 
 ---
 
-## Option A (recommended) — re-run the installer
+## Recommended — update the host code + enable, from a fresh clone (single command)
 
-The installer is idempotent, detects Docker, and does everything below for you
-(group, systemd line, config flip, restart). From the repo checkout on the Pi:
-
-```bash
-sudo ./install.sh
-```
-
-Answer **Yes** at the "Enable Docker Monitor?" prompt (it only appears when a
-reachable Docker daemon is detected). Keep your existing answers for everything
-else. Then jump to **Verify**.
-
----
-
-## Option B — manual enable on a live install (single command)
-
-Use this when you can't re-run the interactive installer. It (1) adds the
-service user to `docker`, (2) adds `SupplementaryGroups=docker` via a systemd
-**drop-in** (additive and trivially reversible — it composes with the existing
-`systemd-journal` group if Server Logs is on), (3) enables `docker` in the
-config, and (4) reloads + restarts the API. It is idempotent.
+This is the clean, git-native path for an **already-configured** install: it
+pulls the current `main` into a throwaway temp dir, syncs just the host-agent
+Python files into `/opt/marnarmon/marnarmon` (no new deps — the venv is
+untouched), enables Docker Monitor, restarts, and deletes the clone. It
+**preserves your existing config** (token, disks, Server Logs) — it never
+rewrites `config.yml` wholesale. Idempotent and self-cleaning; nothing is left
+behind on the server.
 
 ```bash
 sudo bash -euo pipefail <<'EOF'
-# 1. Grant the service user docker-group access (ROOT-EQUIVALENT — see runbook).
+REPO=https://github.com/heldmar/marnarmon.git
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+git clone --depth 1 "$REPO" "$TMP/repo"
+
+# 0. Sync the host-agent code. No new dependencies, so the venv stays as-is.
+#    Preserve the existing package files' owner/mode.
+DST=/opt/marnarmon/marnarmon
+OWNER=$(stat -c '%U' "$DST/api.py"); GROUP=$(stat -c '%G' "$DST/api.py"); MODE=$(stat -c '%a' "$DST/api.py")
+for f in docker.py api.py config.py; do
+  install -o "$OWNER" -g "$GROUP" -m "$MODE" "$TMP/repo/host/marnarmon/$f" "$DST/$f"
+done
+
+# 1. Grant the service user docker-group access (ROOT-EQUIVALENT — see above).
 usermod -aG docker marnarmon
 
 # 2. Add SupplementaryGroups=docker via a drop-in (additive; merges with any
@@ -79,7 +78,7 @@ SupplementaryGroups=docker
 CONF
 
 # 3. Enable Docker Monitor in the config (append the block if absent, else flip
-#    enabled: true inside the existing docker: block).
+#    enabled: true inside the existing docker: block). Existing keys are kept.
 CFG=/etc/marnarmon/config.yml
 if ! grep -qE '^docker:' "$CFG"; then
   cat >> "$CFG" <<'YML'
@@ -91,6 +90,9 @@ docker:
   timeout_seconds: 8.0
   logs_default_tail: 200
   logs_max_tail: 1000
+  stats_cache_seconds: 3.0
+  df_cache_seconds: 60.0
+  events_cache_seconds: 30.0
 YML
 else
   sed -i '/^docker:/,/^[^[:space:]#]/ s/^\(\s*enabled:\).*/\1 true/' "$CFG"
@@ -101,9 +103,16 @@ chown root:marnarmon "$CFG"; chmod 640 "$CFG"
 #    required so the process re-reads config AND picks up the new group.
 systemctl daemon-reload
 systemctl restart marnarmon-api.service
-echo "Docker Monitor enabled."
+echo "Host agent updated + Docker Monitor enabled."
 EOF
 ```
+
+> **Do not use `sudo ./install.sh` to update a live install.** That installer is
+> a first-time provisioner — it rewrites `config.yml` from your prompt answers
+> and **regenerates the API token**, which would break the dashboard's auth. Use
+> it only for a fresh host (or if you deliberately re-enter every existing
+> answer). The command above is the safe way to update an existing, configured
+> server.
 
 ---
 
@@ -166,8 +175,10 @@ Confirm rollback: `curl -fsS -H "Authorization: Bearer $TOKEN" http://127.0.0.1:
 should now show `"docker":false`, and `/docker/overview` returns `503`
 (`docker_disabled`).
 
-> Note: if you originally enabled via **Option A** (installer) rather than the
-> drop-in, the `SupplementaryGroups=docker` line is in the main unit file
-> (`/etc/systemd/system/marnarmon-api.service`). Step 2's `rm` is then a no-op;
-> re-run `sudo ./install.sh` and answer **No** to fully re-render the unit, or
-> remove that line by hand. Steps 1, 3 and 4 above still apply.
+> Note: the disable command above matches the recommended enable path (which
+> uses a systemd **drop-in**). If Docker Monitor was instead enabled by a
+> from-scratch `install.sh` run, the `SupplementaryGroups=docker` line is in the
+> main unit file (`/etc/systemd/system/marnarmon-api.service`) and step 2's `rm`
+> is a no-op — remove that line by hand. Steps 1, 3 and 4 above still apply. The
+> updated `docker.py`/`api.py` can stay in place; with `enabled: false` the
+> `/docker/*` endpoints simply return `503`.
