@@ -34,4 +34,3 @@ venv/
 # OS / editor
 .DS_Store
 *.swp
-dashboard/docker-compose.cfns.yml

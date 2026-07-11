@@ -16,7 +16,7 @@ services:
       API_BASE_URL: "/api"
       # Where nginx forwards /api/ — the host agent as reached FROM THE
       # CONTAINER (host LAN IP, reachable on the Docker network).
-      API_UPSTREAM: "http://192.168.4.200:8787"
+      API_UPSTREAM: "http://YOUR_HOST_IP:8787"
       # Poll interval in seconds (default 300 = 5 min).
       REFRESH_SECONDS: "300"
       # Server Logs "Live" auto-refresh interval in seconds (default 10). Only

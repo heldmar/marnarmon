@@ -8,7 +8,7 @@ API_PROXY_PATH="/etc/nginx/marnarmon-api-proxy.conf"
 
 # Browser-facing API base. Default "/api" = same-origin reverse proxy (below),
 # which is what you want when the dashboard is served over public HTTPS. Set it
-# to a full URL instead (e.g. http://192.168.4.200:8787) for direct LAN access.
+# to a full URL instead (e.g. http://YOUR_HOST_IP:8787) for direct LAN access.
 API_BASE_URL="${API_BASE_URL:-/api}"
 
 # Where nginx forwards /api/ — the host agent as reached FROM THE CONTAINER
