@@ -69,6 +69,13 @@ docker:
   # of the 'docker' group — note that group effectively grants root, so enable
   # this only on hosts where that trade-off is acceptable). The dashboard hides
   # the whole "Docker" section unless the API reports this as enabled.
+  #
+  # SECURITY: docker-group membership is effectively ROOT-EQUIVALENT — anyone who
+  # can reach the API can control the daemon (and thus the host). Only turn this
+  # on when api.token is set AND the API is bound to 127.0.0.1 or sits behind a
+  # trusted, authenticated reverse proxy with restricted api.allowed_origins.
+  # Prefer flipping this via install.sh (re-run and opt in), which also grants the
+  # 'docker' group and renders SupplementaryGroups=docker into the systemd unit.
   enabled: false
   # Path to the docker binary (override only if it isn't on the service's PATH).
   path: "docker"
