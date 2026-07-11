@@ -30,7 +30,7 @@ dashboard adapts to (see `/health`).
   "service": "marnarmon",
   "version": "0.1.0",
   "host": "pi-server",
-  "features": { "logs": false }
+  "features": { "logs": false, "docker": false }
 }
 ```
 
@@ -46,7 +46,7 @@ than 3× the collection interval, else `"stale"`.
   "last_sample_ts": 1782331556,
   "last_sample_age_seconds": 12,
   "interval_minutes": 5,
-  "features": { "logs": false }
+  "features": { "logs": false, "docker": false }
 }
 ```
 
@@ -54,9 +54,10 @@ than 3× the collection interval, else `"stale"`.
 `status: "stale"` with `last_sample_ts: null`.
 
 **`features`** is a capability map. `features.logs` is `true` when Server Logs
-is enabled on this host (`logs.enabled` in config). The dashboard reads it to
-decide whether to show the "Server Logs" section at all — when `false`, the
-`/logs*` endpoints below return `503` and the UI hides the section entirely.
+is enabled on this host (`logs.enabled` in config); `features.docker` is `true`
+when Docker Monitor is enabled (`docker.enabled` in config). The dashboard reads
+each flag to decide whether to show that section at all — when a flag is
+`false`, its endpoints below return `503` and the UI hides the section entirely.
 
 ## `GET /metrics/current`
 
@@ -230,6 +231,181 @@ GET /logs?severity=errors&q=disk&window=24h&limit=100
 - `truncated` is `true` when the result hit `limit` (more lines may exist).
 - `window_minutes` is `null` when a custom `since`/`until` range was used.
 - A journalctl failure (bad filter, timeout, missing binary) returns `502`.
+
+---
+
+## Docker Monitor (container & stack resources + live logs)
+
+Opt-in, off by default. When `docker.enabled` is `false`, all three endpoints
+below return **`503`** with a machine-readable code and no other body:
+
+```json
+{ "code": "docker_disabled", "message": "Docker Monitor is not enabled on this host." }
+```
+
+Clients should key off `features.docker` from `/health` rather than probing
+these. All three are read-only (`GET`) and honor the same bearer-token auth.
+
+**Daemon reachability is a data state, not an HTTP error.** `/docker/overview`
+and `/docker/stacks` return **`200`** even when the docker daemon is
+unreachable (missing binary, permission denied, timeout): the body carries
+`docker_ok: false` and an `error` string, with the payload fields nulled/emptied.
+The dashboard renders this as a banner, so a down daemon is never a `5xx`.
+
+All values are read **live per request** — no docker history is stored (mirrors
+Server Logs). Every size is bytes; CPU is expressed as cores (`100%` of a
+`docker stats` CPU reading equals one full core).
+
+### `GET /docker/overview`
+
+Aggregate host-pressure gauges (percent of host cores / RAM / disk) plus
+quick-stat counts across every container. Issues three docker subprocesses
+(`ps`, `stats`, and a cheap summary `system df`).
+
+```json
+{
+  "host": "pi-server",
+  "docker_ok": true,
+  "error": null,
+  "totals": {
+    "cpu":  { "percent": 12.5, "used_cores": 0.5, "host_cores": 4 },
+    "mem":  { "percent": 41.2, "used_bytes": 1648361472, "total_bytes": 3997925376 },
+    "disk": {
+      "percent": 18.4,
+      "used_bytes": 1932735283,
+      "total_bytes": 10485760000,
+      "images_bytes": 1288490188,
+      "volumes_bytes": 536870912,
+      "containers_bytes": 107374182
+    }
+  },
+  "stats": {
+    "running": 6,
+    "stopped": 1,
+    "total": 7,
+    "stacks": 3,
+    "unhealthy": 0,
+    "net_rx_rate": 1258291,
+    "net_tx_rate": 838860,
+    "restarts_24h": 0
+  }
+}
+```
+
+Field notes and honest caveats:
+
+- `totals.cpu` / `totals.mem` / `totals.disk` are **host pressure**: percentages
+  are computed against the host's core count, `/proc/meminfo` total, and the
+  size of the filesystem backing docker (`statvfs` of `/`).
+- `totals.disk` is the sum of the docker `images` / `volumes` / `containers`
+  buckets from the summary `system df` (each also surfaced individually).
+- `stats.net_rx_rate` / `stats.net_tx_rate` are **cumulative-since-container-start**
+  byte counts summed across containers, surfaced best-effort as if a rate —
+  `docker stats` exposes no per-interval network rate and no history is stored.
+- `stats.restarts_24h` is a **proxy**: the count of containers *currently*
+  restarting, not a true 24-hour history (which would need `docker events`).
+- When `docker_ok` is `false`, `totals` and `stats` are `null`.
+
+### `GET /docker/stacks`
+
+Per-Compose-project stacks, each with its containers and resource meters.
+Containers with no Compose project label are grouped under an `"ungrouped"`
+stack. Issues two docker subprocesses (`ps`, `stats`).
+
+```json
+{
+  "host": "pi-server",
+  "docker_ok": true,
+  "error": null,
+  "stacks": [
+    {
+      "name": "blog",
+      "meta": "wordpress · mariadb · redis",
+      "health": "ok",
+      "health_label": "Healthy",
+      "mem_used_bytes": 612368384,
+      "cpu_used_cores": 0.18,
+      "disk_bytes": 197132288,
+      "containers": [
+        {
+          "id": "a1b2c3d4e5f6",
+          "name": "blog-wordpress-1",
+          "service": "wordpress",
+          "image": "wordpress:6.5",
+          "project": "blog",
+          "state": "ok",
+          "state_raw": "running",
+          "status": "Up 2 hours (healthy)",
+          "health": "healthy",
+          "mem":  { "used_bytes": 268435456, "limit_bytes": 536870912, "percent": 50.0 },
+          "cpu":  { "used_cores": 0.12, "used_percent": 12.0, "limit_cores": null, "percent": null },
+          "disk": { "bytes": 188743680, "rw_bytes": 188743680, "volumes_bytes": 0, "local_volumes": 2 }
+        }
+      ]
+    }
+  ]
+}
+```
+
+Field notes and honest caveats:
+
+- `state` is a UI bucket derived from the raw docker state + status:
+  `"ok"` (running/healthy), `"warn"` (unhealthy, restarting, paused,
+  `health: starting`), `"bad"` (created/exited/dead). `state_raw` and `status`
+  are the untouched docker values; `health` is the healthcheck sub-state
+  (`"healthy"` / `"unhealthy"` / `"starting"`) or `null` when the container has
+  no healthcheck.
+- Stack `health` precedence is **bad > warn > ok** — one stopped container marks
+  the whole stack `bad`. `health_label` is a short human summary
+  (`"Healthy"` / `"1 unhealthy"` / `"1 stopped"`).
+- **RAM meters work**: `mem.limit_bytes` and `mem.percent` are populated when the
+  container has an explicit memory limit. A limit within ~1% of host RAM (or
+  none) is treated as *unlimited*, so `limit_bytes` and `percent` are `null` and
+  the UI hatches the meter as "no limit".
+- **CPU per-container limit is not shown**: `cpu.limit_cores` and `cpu.percent`
+  are **always `null`**. `docker stats`/`ps` don't expose a CPU quota, and
+  deriving it would need a per-container `docker inspect` — too heavy for a Pi.
+  `cpu.used_cores` / `cpu.used_percent` (usage) are always populated.
+- **Per-container volume disk is `0`** on this default lightweight path:
+  `disk.bytes`/`rw_bytes` are the container's writable-layer size from `ps -s`
+  and `volumes_bytes` is `0`. Full volume accounting needs the slow
+  `docker system df -v`, deliberately kept off the hot path. `local_volumes` is
+  the count of attached local volumes.
+
+### `GET /docker/logs`
+
+Live tail for a single container, oldest → newest (docker's natural order).
+Issues one docker subprocess (`docker logs`).
+
+| Param | Meaning |
+|-------|---------|
+| `container` | **Required.** Container id or name. **Whitelist-validated** (`[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}`) and passed after a literal `--`, so an option-looking or metacharacter-laden value can never reach the argv. |
+| `tail` | Lines to tail (server default `docker.logs_default_tail` = 200; capped at `docker.logs_max_tail` = 1000). |
+| `since` | Look-back: epoch **seconds** or a docker duration (`10m`, `2h`, `1h30m`). Also whitelist-validated. |
+
+```
+GET /docker/logs?container=blog-wordpress-1&tail=500&since=10m
+```
+
+```json
+{
+  "host": "pi-server",
+  "container": "blog-wordpress-1",
+  "lines": [
+    { "ts": 1782331556, "message": "[core:notice] AH00094: Command line: 'apache2 -D FOREGROUND'" }
+  ],
+  "count": 1,
+  "tail": 500
+}
+```
+
+- `ts` is epoch **seconds** (parsed from docker's RFC3339 timestamp), or `null`
+  for a line whose leading token isn't a timestamp; `message` is the log text.
+- `tail` echoes the effective (capped) line count used.
+- An invalid `container`/`since` value, a missing docker binary, a timeout, or a
+  daemon error returns **`502`** (same shape as the Server Logs `journalctl`
+  failure). Note this differs from `/docker/overview` + `/docker/stacks`, which
+  report an unreachable daemon as a `200` banner state.
 
 ---
 
