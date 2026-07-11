@@ -39,6 +39,16 @@ export const getHistory = (window = "24h") =>
 
 export const getLogSources = () => get("/logs/sources");
 
+export const getDockerOverview = () => get("/docker/overview");
+export const getDockerStacks = () => get("/docker/stacks");
+
+export function getDockerLogs(container, opts = {}) {
+  const qs = new URLSearchParams({ container });
+  if (opts.tail != null) qs.append("tail", opts.tail);
+  if (opts.since != null && opts.since !== "") qs.append("since", opts.since);
+  return get(`/docker/logs?${qs.toString()}`);
+}
+
 export function getLogs(params = {}) {
   const { units, ...rest } = params;
   const qs = new URLSearchParams();
