@@ -84,7 +84,7 @@ Or build and run the image directly:
 docker build -t marnarmon-dashboard .
 docker run -d -p 8080:80 \
   -e API_BASE_URL="/api" \
-  -e API_UPSTREAM="http://YOUR_HOST_IP:8787" \
+  -e API_UPSTREAM="http://host.docker.internal:8787" --add-host host.docker.internal:host-gateway \
   -e REFRESH_SECONDS=300 \
   -e LOGS_REFRESH_SECONDS=10 \
   -e API_TOKEN="" \

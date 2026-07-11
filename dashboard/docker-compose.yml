@@ -15,8 +15,13 @@ services:
       # ignore API_UPSTREAM, but then it won't work off the LAN.)
       API_BASE_URL: "/api"
       # Where nginx forwards /api/ — the host agent as reached FROM THE
-      # CONTAINER (host LAN IP, reachable on the Docker network).
-      API_UPSTREAM: "http://YOUR_HOST_IP:8787"
+      # CONTAINER. The default resolves the Docker host via the host-gateway
+      # mapping below, so it works on a single-host setup with no server-specific
+      # value baked into this public file. Override with your host's LAN IP
+      # (e.g. http://10.0.0.5:8787) by setting API_UPSTREAM in your env / the
+      # Portainer stack's Environment variables if host.docker.internal can't
+      # reach the agent on your network. Only used in same-origin proxy mode.
+      API_UPSTREAM: "${API_UPSTREAM:-http://host.docker.internal:8787}"
       # Poll interval in seconds (default 300 = 5 min).
       REFRESH_SECONDS: "300"
       # Server Logs "Live" auto-refresh interval in seconds (default 10). Only
@@ -31,6 +36,10 @@ services:
       # default same-origin proxy mode the entrypoint injects it server-side, so
       # it never reaches the browser.
       API_TOKEN: "${API_TOKEN:-}"
+    # Resolve host.docker.internal to the Docker host so the default API_UPSTREAM
+    # works without a server-specific IP (Linux needs this mapping explicitly).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     networks:
       - default
