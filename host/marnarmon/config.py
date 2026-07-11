@@ -38,6 +38,19 @@ class Config:
     logs_timeout_seconds: float
     logs_journalctl_path: str
 
+    # Docker Monitor (container/stack resources + live logs). Opt-in like logs.
+    docker_enabled: bool
+    docker_path: str
+    docker_timeout_seconds: float
+    docker_logs_default_tail: int
+    docker_logs_max_tail: int
+    # Cache TTLs (seconds) that keep the Docker Monitor light on a Pi: the shared
+    # ps+stats snapshot, the slow `docker system df -v` (per-volume disk), and the
+    # `docker events` restart window. 0 disables a cache (always fresh).
+    docker_stats_cache_seconds: float
+    docker_df_cache_seconds: float
+    docker_events_cache_seconds: float
+
     raw: dict = field(default_factory=dict, repr=False)
 
 
@@ -113,6 +126,31 @@ def load_config(path: str | None = None) -> Config:
         raise ValueError("logs.timeout_seconds must be > 0")
     logs_journalctl_path = str(logs.get("journalctl_path") or "journalctl")
 
+    # Docker Monitor. Off by default; conservative caps for a Raspberry Pi.
+    docker = data.get("docker", {}) or {}
+    docker_enabled = bool(docker.get("enabled", False))
+    docker_path = str(docker.get("path") or "docker")
+    docker_timeout_seconds = float(docker.get("timeout_seconds", 8.0))
+    if docker_timeout_seconds <= 0:
+        raise ValueError("docker.timeout_seconds must be > 0")
+    docker_logs_max_tail = int(docker.get("logs_max_tail", 1000))
+    if docker_logs_max_tail < 1:
+        raise ValueError("docker.logs_max_tail must be >= 1")
+    docker_logs_default_tail = int(docker.get("logs_default_tail", 200))
+    if docker_logs_default_tail < 1:
+        raise ValueError("docker.logs_default_tail must be >= 1")
+    docker_logs_default_tail = min(docker_logs_default_tail, docker_logs_max_tail)
+
+    docker_stats_cache_seconds = float(docker.get("stats_cache_seconds", 3.0))
+    if docker_stats_cache_seconds < 0:
+        raise ValueError("docker.stats_cache_seconds must be >= 0")
+    docker_df_cache_seconds = float(docker.get("df_cache_seconds", 60.0))
+    if docker_df_cache_seconds < 0:
+        raise ValueError("docker.df_cache_seconds must be >= 0")
+    docker_events_cache_seconds = float(docker.get("events_cache_seconds", 30.0))
+    if docker_events_cache_seconds < 0:
+        raise ValueError("docker.events_cache_seconds must be >= 0")
+
     return Config(
         host_name=host_name,
         interval_minutes=interval,
@@ -131,5 +169,13 @@ def load_config(path: str | None = None) -> Config:
         logs_default_window_minutes=logs_default_window_minutes,
         logs_timeout_seconds=logs_timeout_seconds,
         logs_journalctl_path=logs_journalctl_path,
+        docker_enabled=docker_enabled,
+        docker_path=docker_path,
+        docker_timeout_seconds=docker_timeout_seconds,
+        docker_logs_default_tail=docker_logs_default_tail,
+        docker_logs_max_tail=docker_logs_max_tail,
+        docker_stats_cache_seconds=docker_stats_cache_seconds,
+        docker_df_cache_seconds=docker_df_cache_seconds,
+        docker_events_cache_seconds=docker_events_cache_seconds,
         raw=data,
     )

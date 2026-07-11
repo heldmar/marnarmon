@@ -60,3 +60,39 @@ logs:
   timeout_seconds: 8.0
   # Override only if journalctl isn't on PATH for the service.
   journalctl_path: "journalctl"
+
+docker:
+  # Docker Monitor feature: container/stack CPU, RAM, disk + live container logs
+  # in the dashboard. OFF by default. When true, the API shells out to the
+  # `docker` CLI (docker stats / ps / system df / logs), so the 'marnarmon'
+  # service user must be able to reach the docker socket (typically membership
+  # of the 'docker' group — note that group effectively grants root, so enable
+  # this only on hosts where that trade-off is acceptable). The dashboard hides
+  # the whole "Docker" section unless the API reports this as enabled.
+  #
+  # SECURITY: docker-group membership is effectively ROOT-EQUIVALENT — anyone who
+  # can reach the API can control the daemon (and thus the host). Only turn this
+  # on when api.token is set AND the API is bound to 127.0.0.1 or sits behind a
+  # trusted, authenticated reverse proxy with restricted api.allowed_origins.
+  # Prefer flipping this via install.sh (re-run and opt in), which also grants the
+  # 'docker' group and renders SupplementaryGroups=docker into the systemd unit.
+  enabled: false
+  # Path to the docker binary (override only if it isn't on the service's PATH).
+  path: "docker"
+  # Abort any docker command after this many seconds (protects the API; a
+  # `docker stats` snapshot on a busy Pi can take a couple of seconds).
+  timeout_seconds: 8.0
+  # Lines tailed for a container when the client doesn't specify.
+  logs_default_tail: 200
+  # Hard cap on lines tailed per container-logs request (server-side).
+  logs_max_tail: 1000
+  # Pi-lightness cache TTLs (seconds). The dashboard polls /overview and /stacks
+  # together every few seconds; these keep that cheap. Set any to 0 to disable
+  # that cache (always fetch fresh) — only do so if you need the metric to react
+  # instantly and can spare the extra docker calls.
+  #   stats: the shared `docker ps` + `docker stats` snapshot both endpoints use.
+  stats_cache_seconds: 3.0
+  #   df: the slow `docker system df -v` used for real per-container/volume disk.
+  df_cache_seconds: 60.0
+  #   events: the `docker events` window behind the 24h restart count.
+  events_cache_seconds: 30.0

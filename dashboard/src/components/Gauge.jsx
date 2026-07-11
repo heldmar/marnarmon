@@ -1,6 +1,6 @@
 // Circular progress gauge drawn with plain SVG (no extra deps). Colour shifts
 // green -> amber -> red as the value approaches 100.
-function colorFor(value) {
+export function colorFor(value) {
   if (value >= 85) return "var(--bad)";
   if (value >= 60) return "var(--warn)";
   return "var(--good)";

@@ -22,6 +22,12 @@ ReadWritePaths=__DB_DIR__
 # Server Logs opt-in: install.sh replaces the next line with
 # 'SupplementaryGroups=systemd-journal' when logs are enabled, or removes it.
 #__LOG_GROUP_LINE__#
+# Docker Monitor opt-in: install.sh replaces the next line with
+# 'SupplementaryGroups=docker' when Docker Monitor is enabled, or removes it.
+# systemd merges repeated SupplementaryGroups= directives, so this composes
+# additively with the journal line above when both features are enabled.
+# WARNING: 'docker' group membership is effectively root-equivalent.
+#__DOCKER_GROUP_LINE__#
 
 [Install]
 WantedBy=multi-user.target

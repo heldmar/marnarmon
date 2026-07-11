@@ -9,6 +9,15 @@ memory/
 .claude/memory/
 **/memory/
 
+# Assistant working context — kept locally so Claude Code auto-loads it, but
+# never committed to this public repo (a fork should not inherit our CLAUDE.md).
+# The files stay on disk; they are untracked, not deleted.
+CLAUDE.md
+**/CLAUDE.md
+# One-off internal handoff/spec artifacts must not land in the tree either.
+DOCKER_MONITOR_SPEC.md
+**/DOCKER_MONITOR_SPEC.md
+
 # Python
 __pycache__/
 *.py[cod]
@@ -25,4 +34,3 @@ venv/
 # OS / editor
 .DS_Store
 *.swp
-dashboard/docker-compose.cfns.yml

@@ -15,5 +15,8 @@ export const config = {
   logsRefreshSeconds: Number(
     rt.LOGS_REFRESH_SECONDS || import.meta.env.VITE_LOGS_REFRESH_SECONDS || 10
   ),
+  dockerRefreshSeconds: Number(
+    rt.DOCKER_REFRESH_SECONDS || import.meta.env.VITE_DOCKER_REFRESH_SECONDS || 5
+  ),
   apiToken: rt.API_TOKEN || import.meta.env.VITE_API_TOKEN || "",
 };

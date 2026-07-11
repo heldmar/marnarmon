@@ -25,6 +25,26 @@ consumes the same API.
     `24h`, `7d`, or `?minutes=N`)
   - `GET /logs`, `GET /logs/sources` — systemd-journal browsing, **only when
     Server Logs is enabled** (see below)
+  - `GET /docker/overview`, `GET /docker/stacks`, `GET /docker/logs` — Docker
+    container/stack resources + live container logs, **only when Docker Monitor
+    is enabled** (see below)
+- **Docker Monitor (optional)** — a dashboard section for Docker hosts. Shows
+  three aggregate host-pressure gauges (CPU / RAM / Disk consumed by all
+  containers), per-Compose-stack and per-container **RAM and CPU** used-vs-limit
+  meters, an informational per-container **disk** footprint meter, and a live
+  per-container **log** drawer. Metrics are read live per request via the
+  `docker` CLI (`stats` / `ps` / `system df` / `logs` / `inspect` / `events`) —
+  nothing is stored. Readings are real, not approximations: per-container **CPU
+  limits** (from a single batched `inspect`), network I/O as a true **bytes/sec
+  rate** (in-memory delta between polls), a true **24h restart** count (from
+  `docker events`), and per-container **disk including named volumes**. To stay
+  light on a Pi, the shared `ps`+`stats` snapshot and the slow `df -v` / `events`
+  calls are cached with short, configurable TTLs so the every-few-seconds path
+  costs only `ps` + `stats` + `inspect` (see [`API.md`](API.md) for exact
+  per-field semantics and the cache knobs). **Off by default** — opt in during
+  `install.sh` (which adds the service user to the `docker` group) or follow the
+  [`host/DOCKER_MONITOR_DEPLOY.md`](host/DOCKER_MONITOR_DEPLOY.md) runbook to
+  enable it on an already-running install.
 - **Server Logs (optional)** — an easy, friendly journal browser for
   troubleshooting: search by keyword, filter by severity (Errors / Warnings /
   Info / Everything), pick sources (systemd units + kernel), and choose a time
@@ -34,7 +54,8 @@ consumes the same API.
   dashboard shows the "Server Logs" section only when the host has it enabled.
 - **Config-driven** — everything lives in `/etc/marnarmon/config.yml`: tracked
   mount points, collection interval, retention, API bind/port, an optional
-  bearer token, and the Server Logs toggle. Nothing is hardcoded.
+  bearer token, and the Server Logs / Docker Monitor toggles. Nothing is
+  hardcoded.
 
 ## Install
 
@@ -50,9 +71,11 @@ The installer is interactive. It will:
 1. Install `python3` + `venv` (apt/dnf/yum/apk aware).
 2. Create a `marnarmon` system user.
 3. Ask for host name, collection interval, retention, API bind address/port,
-   whether to enable a bearer token (auto-generated), and **whether to enable
+   whether to enable a bearer token (auto-generated), **whether to enable
    Server Logs** (opt-in; adds the service user to the `systemd-journal` group
-   so the API can read the journal).
+   so the API can read the journal), and — when a running Docker daemon is
+   detected — **whether to enable Docker Monitor** (opt-in; adds the service
+   user to the `docker` group, which is root-equivalent — see Security notes).
 4. List the mount points found in `/etc/fstab` (with live usage) and let you
    pick which disks to track.
 5. Deploy the code to `/opt/marnarmon`, build a venv, write the config,
@@ -145,6 +168,14 @@ sudo ./uninstall.sh
   on your network visits read the API cross-origin.
 - Bind the API to `127.0.0.1` if the dashboard runs on the same host; use
   `0.0.0.0` only on a trusted LAN.
+- **Docker Monitor grants root-equivalent access — treat it accordingly.**
+  Enabling it puts the `marnarmon` service user in the `docker` group so the API
+  can shell out to the `docker` CLI. Docker-group membership is **effectively
+  root**: anyone who can reach the API can drive the daemon and thus take over
+  the host. Only enable it when `api.token` is set **and** the API is bound to
+  `127.0.0.1` (or sits behind a trusted, authenticated reverse proxy with
+  restricted `api.allowed_origins`). Never expose an unauthenticated
+  Docker-Monitor-enabled API to an untrusted network.
 - The service runs as an unprivileged `marnarmon` user with systemd hardening
   (`ProtectSystem`, `ProtectHome`, `NoNewPrivileges`, restricted
   `ReadWritePaths`). Enabling Server Logs adds one read-only capability:
