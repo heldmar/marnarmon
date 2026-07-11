@@ -10,6 +10,14 @@ import ContainerLogs from "../components/ContainerLogs.jsx";
 
 const refreshMs = config.dockerRefreshSeconds * 1000;
 
+// Trim a CPU core count for display: whole numbers stay integer ("2"), fractions
+// show up to two decimals without trailing zeros ("0.5", "1.25").
+function fmtCores(cores) {
+  return Number(cores)
+    .toFixed(2)
+    .replace(/\.?0+$/, "");
+}
+
 // A short lifecycle note appended to the service line so state is never
 // colour-only (a11y — see spec §10 / states matrix §8.1).
 function stateNote(c) {
@@ -50,7 +58,7 @@ function containerVM(c) {
     },
     cpu: {
       usedLabel: `${(cpu.used_cores ?? 0).toFixed(2)} cores`,
-      limitLabel: cpu.limit_cores != null ? `${cpu.limit_cores} cores` : null,
+      limitLabel: cpu.limit_cores != null ? `${fmtCores(cpu.limit_cores)} cores` : null,
       pct: cpu.percent != null ? cpu.percent : null,
     },
     disk: {

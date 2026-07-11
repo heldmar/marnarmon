@@ -12,15 +12,18 @@ It recognizes the argv shapes docker.py builds:
     docker ps -a -s --format {{json .}}
     docker system df [--format {{json .}}]
     docker system df -v --format {{json .}}
+    docker inspect -- <id1> <id2> …
     docker logs --tail N [--timestamps] [--since=…] -- <container>
 
 Behavior is tunable through env vars so a single stub can act out the daemon-
 unreachable / bad-container / timeout paths the wrappers must handle:
 
-    FAKE_DOCKER_FAIL=1        -> exit 1 with a daemon-error line on stderr
-    FAKE_DOCKER_LOGS_RC=1     -> `docker logs` exits 1 (no stdout) => hard error
-    FAKE_DOCKER_LOGS_STDERR=1 -> `docker logs` writes to stderr (legit log output)
-    FAKE_DOCKER_HANG=1        -> sleep well past any test timeout (TimeoutExpired)
+    FAKE_DOCKER_FAIL=1         -> exit 1 with a daemon-error line on stderr
+    FAKE_DOCKER_LOGS_RC=1      -> `docker logs` exits 1 (no stdout) => hard error
+    FAKE_DOCKER_LOGS_STDERR=1  -> `docker logs` writes to stderr (legit log output)
+    FAKE_DOCKER_INSPECT_FAIL=1 -> `docker inspect` exits 1 (stacks() must still
+                                  return, with CPU limits degraded to None)
+    FAKE_DOCKER_HANG=1         -> sleep well past any test timeout (TimeoutExpired)
 """
 import os
 import sys
@@ -58,6 +61,19 @@ SYSTEM_DF = """{"Type":"Images","TotalCount":"5","Active":"3","Size":"1.2GB","Re
 # with nested arrays. docker.py doesn't parse this on the hot path; provided so a
 # test can prove the -v argv shape is only ever built when explicitly requested.
 SYSTEM_DF_V = """{"Images":[{"Repository":"nginx","Tag":"latest","Size":"180MB"}],"Containers":[{"Names":"shop_web_1","Size":"180MB"}],"Volumes":[{"Name":"shop_dbdata","Size":"512MB"}],"BuildCache":[]}
+"""
+
+# `docker inspect <ids…>` output: a JSON array (docker returns one array for the
+# whole batch). Covers every CPU-limit derivation path parse_inspect_cpu must
+# handle: NanoCpus (web, 1.5 cores), CpuQuota/CpuPeriod (db, 0.5 cores),
+# CpuQuota with an unset period defaulting to 100000 (old_worker, 2.0 cores), and
+# no limit at all (lonely -> None).
+INSPECT = """[
+  {"Id":"aaaaaaaaaaaa","HostConfig":{"NanoCpus":1500000000,"CpuQuota":0,"CpuPeriod":0}},
+  {"Id":"bbbbbbbbbbbb","HostConfig":{"NanoCpus":0,"CpuQuota":50000,"CpuPeriod":100000}},
+  {"Id":"cccccccccccc","HostConfig":{"NanoCpus":0,"CpuQuota":0,"CpuPeriod":0}},
+  {"Id":"dddddddddddd","HostConfig":{"NanoCpus":0,"CpuQuota":200000,"CpuPeriod":0}}
+]
 """
 
 # `docker logs --timestamps` output: RFC3339-nanosecond stamp + message, plus a
@@ -110,6 +126,13 @@ def main(argv):
 
     if sub == "ps":
         _emit(PS)
+        return 0
+
+    if sub == "inspect":
+        if os.environ.get("FAKE_DOCKER_INSPECT_FAIL"):
+            sys.stderr.write("Error: inspect failed\n")
+            return 1
+        _emit(INSPECT)
         return 0
 
     if sub == "system" and len(args) >= 2 and args[1] == "df":

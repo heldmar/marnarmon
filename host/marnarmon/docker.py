@@ -222,6 +222,25 @@ def build_logs_args(
     return args
 
 
+def build_inspect_args(container_ids: Sequence[str], docker_path: str = "docker") -> List[str]:
+    """Build a SINGLE `docker inspect <id1> <id2> …` argv for all containers in
+    one call (docker inspect returns a JSON array for the whole batch), so the
+    per-container CPU limit costs exactly one extra subprocess — never one per
+    container.
+
+    Every id is validated with the same strict whitelist as build_logs_args and
+    passed after a literal "--", so a hostile id can't become a flag / shell
+    token. Returns [] for an empty id list so the caller can skip the call.
+    """
+    ids = [str(c) for c in (container_ids or []) if c]
+    if not ids:
+        return []
+    for cid in ids:
+        if not _CONTAINER_RE.match(cid):
+            raise DockerError("invalid container reference")
+    return [docker_path, "inspect", "--", *ids]
+
+
 # --------------------------------------------------------------------------- #
 # Output parsing (pure)
 # --------------------------------------------------------------------------- #
@@ -358,18 +377,79 @@ def parse_system_df(raw_stdout: str) -> Dict[str, dict]:
     return out
 
 
+def parse_inspect_cpu(raw_stdout: str) -> Dict[str, Optional[float]]:
+    """Parse `docker inspect <ids…>` (a JSON array) into a map of container id ->
+    CPU limit in cores, or None when the container has no CPU limit set.
+
+    Cores are derived from HostConfig, cheaply and without a per-container call:
+      - NanoCpus  (set by `--cpus`)  -> cores = NanoCpus / 1e9
+      - else CpuQuota/CpuPeriod (`--cpu-quota`/`--cpu-period`, or `--cpus` on
+        older daemons) -> cores = CpuQuota / CpuPeriod (period defaults to the
+        kernel CFS default 100000 µs when unset).
+      - else None (genuinely unlimited).
+    Tolerant: malformed JSON, non-array payloads, and missing fields degrade to
+    an empty map / None rather than raising."""
+    try:
+        data = json.loads(raw_stdout)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    if not isinstance(data, list):
+        return {}
+
+    out: Dict[str, Optional[float]] = {}
+    for obj in data:
+        if not isinstance(obj, dict):
+            continue
+        cid = obj.get("Id") or obj.get("ID") or ""
+        if not cid:
+            continue
+        limit = _cpu_limit_cores(obj.get("HostConfig") or {})
+        out[cid] = limit
+        out[cid[:12]] = limit  # short id, to match ps -a's 12-char ids
+    return out
+
+
+def _cpu_limit_cores(host_config: dict) -> Optional[float]:
+    """CPU limit in cores from a container's HostConfig (see parse_inspect_cpu).
+    Returns None when no limit is configured."""
+    try:
+        nano = int(host_config.get("NanoCpus") or 0)
+    except (TypeError, ValueError):
+        nano = 0
+    if nano > 0:
+        return nano / 1e9
+
+    try:
+        quota = int(host_config.get("CpuQuota") or 0)
+    except (TypeError, ValueError):
+        quota = 0
+    try:
+        period = int(host_config.get("CpuPeriod") or 0)
+    except (TypeError, ValueError):
+        period = 0
+    if quota > 0:
+        return quota / (period if period > 0 else 100000)
+    return None
+
+
 # --------------------------------------------------------------------------- #
 # Grouping / aggregation (pure)
 # --------------------------------------------------------------------------- #
-def group_stacks(containers: List[dict], stats: Dict[str, dict], host_mem_total: int) -> List[dict]:
+def group_stacks(
+    containers: List[dict],
+    stats: Dict[str, dict],
+    host_mem_total: int,
+    cpu_limits: Optional[Dict[str, Optional[float]]] = None,
+) -> List[dict]:
     """Join ps containers with their stats and group them into Compose stacks.
 
     - Containers without a Compose project land in the UNGROUPED bucket.
     - A memory "limit" equal to (≈) host total means no explicit limit was set;
       such a container reports mem.percent = None so the UI hatches its meter.
-    - CPU limits aren't exposed by stats/ps, so cpu.percent is always None
-      (no-limit) here — deriving it would need a per-container `docker inspect`,
-      which is too heavy for a Pi. Documented limitation.
+    - CPU limits come from `cpu_limits` (a container-id -> cores map built by a
+      single batched `docker inspect`, see stacks()). A container missing from
+      the map (or mapped to None) has no CPU limit set -> cpu.percent = None and
+      the UI hatches its meter, mirroring the memory no-limit case.
     - Stack health precedence: bad > warn > ok (one stopped container makes the
       whole stack badge bad).
     """
@@ -385,12 +465,17 @@ def group_stacks(containers: List[dict], stats: Dict[str, dict], host_mem_total:
     stacks: List[dict] = []
     for key in order:
         members = buckets[key]
-        vms = [_container_vm(c, stats, host_mem_total) for c in members]
+        vms = [_container_vm(c, stats, host_mem_total, cpu_limits) for c in members]
         stacks.append(_stack_vm(key, vms))
     return stacks
 
 
-def _container_vm(c: dict, stats: Dict[str, dict], host_mem_total: int) -> dict:
+def _container_vm(
+    c: dict,
+    stats: Dict[str, dict],
+    host_mem_total: int,
+    cpu_limits: Optional[Dict[str, Optional[float]]] = None,
+) -> dict:
     """Build the per-container view model (identity, state, mem/cpu/disk)."""
     st = stats.get(c["id"]) or stats.get(c["id"][:12]) or stats.get(c["name"]) or {}
 
@@ -402,6 +487,16 @@ def _container_vm(c: dict, stats: Dict[str, dict], host_mem_total: int) -> dict:
 
     cpu_percent = float(st.get("cpu_percent", 0.0))
     used_cores = cpu_percent / 100.0  # docker CPU%: 100% == one full core
+
+    # CPU limit from the batched inspect (None = genuinely unlimited). Look up by
+    # full then short id, mirroring the stats lookup above.
+    limits = cpu_limits or {}
+    cpu_limit_cores = limits.get(c["id"])
+    if cpu_limit_cores is None:
+        cpu_limit_cores = limits.get(c["id"][:12])
+    cpu_util_percent = (
+        (used_cores / cpu_limit_cores * 100.0) if cpu_limit_cores else None
+    )
 
     volumes_bytes = 0.0  # per-volume sizes need `df -v`; filled in by api when asked
     disk_bytes = float(c["rw_bytes"]) + volumes_bytes
@@ -424,8 +519,8 @@ def _container_vm(c: dict, stats: Dict[str, dict], host_mem_total: int) -> dict:
         "cpu": {
             "used_cores": used_cores,
             "used_percent": cpu_percent,
-            "limit_cores": None,   # not derivable without inspect (see docstring)
-            "percent": None,
+            "limit_cores": cpu_limit_cores,   # None = no CPU limit set
+            "percent": cpu_util_percent,      # used vs limit; None when unlimited
         },
         "disk": {
             "bytes": disk_bytes,
@@ -668,18 +763,37 @@ def overview(
     )
 
 
+def _inspect_cpu_limits(
+    containers: List[dict], docker_path: str, timeout_seconds: float
+) -> Dict[str, Optional[float]]:
+    """One batched `docker inspect` over all known container ids -> id->cores map.
+    Best-effort: any failure (daemon hiccup, bad id, timeout) degrades to an
+    empty map so the CPU meters simply hatch as 'no limit' — never breaks the
+    /docker/stacks endpoint."""
+    ids = [c["id"] for c in containers if c.get("id")]
+    if not ids:
+        return {}
+    try:
+        args = build_inspect_args(ids, docker_path)
+        return parse_inspect_cpu(_run(args, timeout_seconds))
+    except DockerError:
+        return {}
+
+
 def stacks(
     docker_path: str = "docker",
     timeout_seconds: float = 8.0,
 ) -> List[dict]:
     """Per-Compose-project stacks with their containers and resource meters.
 
-    Skips the slow `df -v`; per-container disk is the writable-layer size from
-    `ps -s` (volume footprints would require `df -v` and are left at 0 for the
-    Pi-friendly default path).
+    Three subprocesses total: `ps` + `stats` (via _collect) + one batched
+    `docker inspect` for the per-container CPU limits. Skips the slow `df -v`;
+    per-container disk is the writable-layer size from `ps -s` (volume footprints
+    would require `df -v` and are left at 0 for the Pi-friendly default path).
     """
     containers, stats, _ = _collect(docker_path, timeout_seconds, with_df=False)
-    return group_stacks(containers, stats, _host_mem_total_bytes())
+    cpu_limits = _inspect_cpu_limits(containers, docker_path, timeout_seconds)
+    return group_stacks(containers, stats, _host_mem_total_bytes(), cpu_limits)
 
 
 def container_logs(

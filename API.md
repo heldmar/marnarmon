@@ -310,7 +310,8 @@ Field notes and honest caveats:
 
 Per-Compose-project stacks, each with its containers and resource meters.
 Containers with no Compose project label are grouped under an `"ungrouped"`
-stack. Issues two docker subprocesses (`ps`, `stats`).
+stack. Issues three docker subprocesses (`ps`, `stats`, and a single batched
+`docker inspect` over all container ids for the per-container CPU limits).
 
 ```json
 {
@@ -338,7 +339,7 @@ stack. Issues two docker subprocesses (`ps`, `stats`).
           "status": "Up 2 hours (healthy)",
           "health": "healthy",
           "mem":  { "used_bytes": 268435456, "limit_bytes": 536870912, "percent": 50.0 },
-          "cpu":  { "used_cores": 0.12, "used_percent": 12.0, "limit_cores": null, "percent": null },
+          "cpu":  { "used_cores": 0.12, "used_percent": 12.0, "limit_cores": 1.5, "percent": 8.0 },
           "disk": { "bytes": 188743680, "rw_bytes": 188743680, "volumes_bytes": 0, "local_volumes": 2 }
         }
       ]
@@ -362,10 +363,15 @@ Field notes and honest caveats:
   container has an explicit memory limit. A limit within ~1% of host RAM (or
   none) is treated as *unlimited*, so `limit_bytes` and `percent` are `null` and
   the UI hatches the meter as "no limit".
-- **CPU per-container limit is not shown**: `cpu.limit_cores` and `cpu.percent`
-  are **always `null`**. `docker stats`/`ps` don't expose a CPU quota, and
-  deriving it would need a per-container `docker inspect` — too heavy for a Pi.
-  `cpu.used_cores` / `cpu.used_percent` (usage) are always populated.
+- **CPU meters work**: `cpu.limit_cores` and `cpu.percent` (used ÷ limit) are
+  populated when the container has a CPU limit, derived from a single batched
+  `docker inspect` over all containers (`HostConfig.NanoCpus`, falling back to
+  `CpuQuota`/`CpuPeriod`) — one extra subprocess, never one per container. They
+  are `null` **only when the container genuinely has no CPU limit set**, in which
+  case the UI hatches the meter as "no limit" (mirroring the RAM no-limit case).
+  If the inspect call fails for any reason the endpoint still returns 200 with
+  the limits degraded to `null`. `cpu.used_cores` / `cpu.used_percent` (usage)
+  are always populated.
 - **Per-container volume disk is `0`** on this default lightweight path:
   `disk.bytes`/`rw_bytes` are the container's writable-layer size from `ps -s`
   and `volumes_bytes` is `0`. Full volume accounting needs the slow

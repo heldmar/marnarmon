@@ -207,6 +207,28 @@ def test_container_whitelist_rejects_injection():
             check(f"container {c!r} rejected", True)
 
 
+def test_build_inspect_args():
+    """One batched inspect argv for all ids — never one call per container."""
+    a = D.build_inspect_args(["aaaaaaaaaaaa", "bbbbbbbbbbbb"], "docker")
+    check("single inspect call", a[:3] == ["docker", "inspect", "--"])
+    check("all ids in one argv", a[3:] == ["aaaaaaaaaaaa", "bbbbbbbbbbbb"])
+    check("ids after -- separator", a.index("aaaaaaaaaaaa") > a.index("--"))
+    # Empty / falsy ids -> no call at all (caller skips).
+    check("empty ids -> []", D.build_inspect_args([]) == [])
+    check("None ids -> []", D.build_inspect_args(None) == [])
+    check("all-falsy ids -> []", D.build_inspect_args(["", None]) == [])
+    # Custom docker path honored.
+    check("custom path", D.build_inspect_args(["abc123"], "/usr/bin/docker")[0] == "/usr/bin/docker")
+    # The SAME whitelist as build_logs_args guards each id.
+    evil = ["; rm -rf /", "$(reboot)", "`id`", "--rm", "-f", "a b", "a\nb", "a" * 129]
+    for cid in evil:
+        try:
+            D.build_inspect_args(["aaaaaaaaaaaa", cid])
+            check(f"inspect id {cid!r} REJECTED", False)
+        except D.DockerError:
+            check(f"inspect id {cid!r} rejected", True)
+
+
 # --------------------------------------------------------------------------- #
 # Output parsing
 # --------------------------------------------------------------------------- #
@@ -278,6 +300,75 @@ def test_parse_system_df():
     check("reclaimable stripped of percent", df["images"]["reclaimable_bytes"] == 400 * 1000 ** 2)
     # Unknown future Type is ignored, not fatal (forward-compat).
     check("unknown type ignored", "something new from v99" not in df)
+
+
+INSPECT = """[
+  {"Id":"aaaaaaaaaaaa","HostConfig":{"NanoCpus":1500000000,"CpuQuota":0,"CpuPeriod":0}},
+  {"Id":"bbbbbbbbbbbb","HostConfig":{"NanoCpus":0,"CpuQuota":50000,"CpuPeriod":100000}},
+  {"Id":"dddddddddddd","HostConfig":{"NanoCpus":0,"CpuQuota":200000,"CpuPeriod":0}},
+  {"Id":"cccccccccccc","HostConfig":{"NanoCpus":0,"CpuQuota":0,"CpuPeriod":0}}
+]
+"""
+
+
+def test_parse_inspect_cpu():
+    m = D.parse_inspect_cpu(INSPECT)
+    # NanoCpus wins: 1.5e9 / 1e9 = 1.5 cores.
+    check("NanoCpus -> cores", abs(m["aaaaaaaaaaaa"] - 1.5) < 1e-9)
+    # CpuQuota / CpuPeriod = 50000/100000 = 0.5 cores.
+    check("quota/period -> cores", abs(m["bbbbbbbbbbbb"] - 0.5) < 1e-9)
+    # CpuQuota set but CpuPeriod unset -> default period 100000: 200000/100000 = 2.0.
+    check("quota with default period", abs(m["dddddddddddd"] - 2.0) < 1e-9)
+    # No limit at all -> genuinely unlimited -> None.
+    check("no limit -> None", m["cccccccccccc"] is None)
+    # Keyed by both full and short id (short == full here, both present).
+    check("short-id key present", "aaaaaaaaaaaa"[:12] in m)
+
+
+def test_parse_inspect_cpu_tolerant():
+    check("malformed json -> {}", D.parse_inspect_cpu("not json") == {})
+    check("empty -> {}", D.parse_inspect_cpu("") == {})
+    check("non-array -> {}", D.parse_inspect_cpu('{"Id":"x"}') == {})
+    # Missing HostConfig / fields degrade to None, never raise.
+    m = D.parse_inspect_cpu('[{"Id":"zzzzzzzzzzzz"},{"Id":"yyyyyyyyyyyy","HostConfig":{}}]')
+    check("missing HostConfig -> None", m["zzzzzzzzzzzz"] is None)
+    check("empty HostConfig -> None", m["yyyyyyyyyyyy"] is None)
+    # Junk numeric fields tolerated.
+    m2 = D.parse_inspect_cpu('[{"Id":"q","HostConfig":{"NanoCpus":"oops","CpuQuota":null,"CpuPeriod":"x"}}]')
+    check("junk numerics -> None", m2["q"] is None)
+    # An entry without an Id is skipped, not fatal.
+    m3 = D.parse_inspect_cpu('[{"HostConfig":{"NanoCpus":1000000000}}]')
+    check("no-Id entry skipped", m3 == {})
+
+
+def test_container_cpu_limit_from_inspect():
+    """With a cpu_limits map, the container VM reports a real limit + percent;
+    without one (or mapped to None) it stays no-limit (percent None)."""
+    containers = D.parse_ps(PS)
+    stats = D.parse_stats(STATS)
+    limits = D.parse_inspect_cpu(INSPECT)
+
+    # web: used 12.5% -> 0.125 cores, limit 1.5 cores -> 8.333% util.
+    web = D._container_vm(
+        next(c for c in containers if c["name"] == "shop_web_1"), stats, HOST_MEM, limits
+    )
+    check("cpu limit_cores set", abs(web["cpu"]["limit_cores"] - 1.5) < 1e-9)
+    check("cpu used_cores preserved", abs(web["cpu"]["used_cores"] - 0.125) < 1e-9)
+    check("cpu percent = used/limit", abs(web["cpu"]["percent"] - (0.125 / 1.5 * 100)) < 1e-6)
+
+    # lonely: no CPU limit -> limit_cores None, percent None (hatched meter).
+    lonely = D._container_vm(
+        next(c for c in containers if c["name"] == "lonely"), stats, HOST_MEM, limits
+    )
+    check("unlimited -> limit None", lonely["cpu"]["limit_cores"] is None)
+    check("unlimited -> percent None", lonely["cpu"]["percent"] is None)
+
+    # No map at all -> falls back to no-limit (backward compatible).
+    web_nolimits = D._container_vm(
+        next(c for c in containers if c["name"] == "shop_web_1"), stats, HOST_MEM
+    )
+    check("no map -> limit None", web_nolimits["cpu"]["limit_cores"] is None)
+    check("no map -> percent None", web_nolimits["cpu"]["percent"] is None)
 
 
 def test_parse_ps_empty_and_malformed():
@@ -416,10 +507,39 @@ def test_wrappers_end_to_end(tmp_path=None):
 
     stacks = D.stacks(docker_path=docker, timeout_seconds=8.0)
     check("stacks returned", len(stacks) == 2)
+    # The batched inspect populated per-container CPU limits end-to-end.
+    shop = next(s for s in stacks if s["name"] == "shop")
+    web = next(c for c in shop["containers"] if c["name"] == "shop_web_1")
+    check("e2e web cpu limit 1.5 cores", abs(web["cpu"]["limit_cores"] - 1.5) < 1e-9)
+    check("e2e web cpu percent set", web["cpu"]["percent"] is not None)
+    ung = next(s for s in stacks if s["name"] == D.UNGROUPED)
+    lonely = next(c for c in ung["containers"] if c["name"] == "lonely")
+    check("e2e lonely cpu unlimited", lonely["cpu"]["limit_cores"] is None)
 
     logs = D.container_logs("shop_web_1", tail=100, docker_path=docker)
     check("logs parsed", len(logs) == 4)
     check("logs first message", logs[0]["message"] == "starting up")
+
+
+def test_stacks_inspect_failure_falls_back(tmp_path=None):
+    """If the batched inspect fails, /docker/stacks must still return — CPU
+    limits just degrade to None (meters hatch), endpoint never breaks."""
+    import tempfile
+    tmp = str(tmp_path) if tmp_path is not None else tempfile.mkdtemp()
+    docker = _fake_docker_path(tmp)
+    os.environ["FAKE_DOCKER_INSPECT_FAIL"] = "1"
+    try:
+        stacks = D.stacks(docker_path=docker, timeout_seconds=8.0)
+        check("stacks still returned on inspect fail", len(stacks) == 2)
+        allc = [c for s in stacks for c in s["containers"]]
+        check("all cpu limits None on inspect fail",
+              all(c["cpu"]["limit_cores"] is None for c in allc))
+        check("all cpu percent None on inspect fail",
+              all(c["cpu"]["percent"] is None for c in allc))
+        # used_cores is still computed from stats regardless.
+        check("used_cores still present", any(c["cpu"]["used_cores"] > 0 for c in allc))
+    finally:
+        os.environ.pop("FAKE_DOCKER_INSPECT_FAIL", None)
 
 
 def test_wrapper_daemon_unreachable(tmp_path=None):
@@ -599,9 +719,13 @@ def main():
         test_build_logs_args_ok,
         test_since_whitelist,
         test_container_whitelist_rejects_injection,
+        test_build_inspect_args,
         test_parse_stats,
         test_parse_ps,
         test_parse_system_df,
+        test_parse_inspect_cpu,
+        test_parse_inspect_cpu_tolerant,
+        test_container_cpu_limit_from_inspect,
         test_parse_ps_empty_and_malformed,
         test_group_stacks,
         test_mem_limit_semantics,
@@ -610,6 +734,7 @@ def main():
         test_build_overview_empty,
         test_parse_logs,
         test_wrappers_end_to_end,
+        test_stacks_inspect_failure_falls_back,
         test_wrapper_daemon_unreachable,
         test_wrapper_missing_binary,
         test_logs_wrapper_stderr_is_content,
