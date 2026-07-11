@@ -146,6 +146,70 @@ case "$enable_logs" in
     *) warn "Server Logs disabled (dashboard shows only Server Resources)" ;;
 esac
 
+# Docker Monitor — opt-in, and only offered when Docker is actually present.
+# Enabling it adds the service user to the 'docker' group, which is effectively
+# ROOT-EQUIVALENT: anyone able to reach the API can drive the Docker daemon.
+# It is therefore off unless (a) Docker is detected and (b) you explicitly opt in.
+DOCKER_ENABLED="false"
+# sed program used by render_unit to fill/remove the docker-group line in the
+# API unit. Default: delete the placeholder (Docker Monitor off). Composes with
+# LOG_GROUP_REPL — systemd merges the two SupplementaryGroups= lines.
+DOCKER_GROUP_REPL='/#__DOCKER_GROUP_LINE__#/d'
+
+# Detect a *reachable* Docker daemon, not merely the binary: 'docker info'
+# succeeding means the socket is usable; otherwise fall back to the socket file.
+docker_present=0
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    docker_present=1
+elif [ -S /var/run/docker.sock ]; then
+    docker_present=1
+fi
+
+if [ "$docker_present" -eq 1 ]; then
+    echo
+    warn "Docker detected on this host."
+    warn "${BOLD}Enabling Docker Monitor is a privilege decision.${RESET} It adds"
+    warn "'${SERVICE_USER}' to the 'docker' group, which is effectively"
+    warn "${BOLD}ROOT-EQUIVALENT${RESET} — anyone who can reach the API could then control"
+    warn "the Docker daemon (and thus the host). Only enable this when the API is"
+    warn "authenticated (bearer token) AND bound to localhost or behind a trusted,"
+    warn "authenticated reverse proxy."
+    enable_docker="$(ask 'Enable Docker Monitor (container CPU/RAM/disk + live logs)? (y/N)' 'N')"
+    case "$enable_docker" in
+        [yY]*)
+            DOCKER_ENABLED="true"
+            DOCKER_GROUP_REPL='s|#__DOCKER_GROUP_LINE__#|SupplementaryGroups=docker|'
+            if getent group docker >/dev/null 2>&1; then
+                usermod -aG docker "${SERVICE_USER}"
+                ok "Docker Monitor enabled — added '${SERVICE_USER}' to the 'docker' group"
+            else
+                warn "'docker' group not found — Docker Monitor may not work on this host"
+            fi
+            # Hard security prerequisite: without a token, /docker/* (root-equivalent
+            # control) is reachable by anyone who can hit the API. We can't refuse
+            # (re-running to add a token is the user's call), but we warn LOUDLY.
+            if [ -z "$API_TOKEN" ]; then
+                echo
+                err "SECURITY: Docker Monitor is ON but the API has NO bearer token."
+                err "The /docker/* endpoints (root-equivalent Docker control) would be"
+                err "reachable by ANYONE who can connect to the API."
+                if [ "$API_HOST" = "0.0.0.0" ]; then
+                    err "The API is also bound to 0.0.0.0 — this exposes root-equivalent"
+                    err "Docker control to your entire LAN. Strongly reconsider."
+                fi
+                err "Recommended: re-run and enable token auth, and/or bind to 127.0.0.1"
+                err "behind an authenticated reverse proxy."
+            elif [ "$API_HOST" = "0.0.0.0" ]; then
+                warn "API is bound to 0.0.0.0: keep the token secret and prefer a trusted"
+                warn "reverse proxy / restricted api.allowed_origins for Docker Monitor."
+            fi
+            ;;
+        *) warn "Docker Monitor disabled" ;;
+    esac
+else
+    info "Docker not detected (no reachable daemon/socket) — Docker Monitor not offered"
+fi
+
 # --------------------------------------------------------------------------- #
 # 4. Disk selection from /etc/fstab
 # --------------------------------------------------------------------------- #
@@ -252,6 +316,14 @@ mkdir -p "${CONFIG_DIR}"
     echo "  default_window_minutes: 60"
     echo "  timeout_seconds: 8.0"
     echo "  journalctl_path: \"journalctl\""
+    echo "docker:"
+    echo "  # SECURITY: enabled=true requires the service user in the 'docker' group,"
+    echo "  # which is root-equivalent. Keep the API token set and access restricted."
+    echo "  enabled: ${DOCKER_ENABLED}"
+    echo "  path: \"docker\""
+    echo "  timeout_seconds: 8.0"
+    echo "  logs_default_tail: 200"
+    echo "  logs_max_tail: 1000"
 } > "${CONFIG_FILE}"
 chown root:"${SERVICE_USER}" "${CONFIG_FILE}"
 chmod 640 "${CONFIG_FILE}"
@@ -262,9 +334,11 @@ ok "Config written"
 # --------------------------------------------------------------------------- #
 info "Installing systemd units"
 render_unit() {
-    # LOG_GROUP_REPL either fills the __LOG_GROUP_LINE__ placeholder with the
-    # journal-group directive (logs on) or deletes it (logs off / other units
-    # that don't contain the placeholder — a harmless no-op there).
+    # LOG_GROUP_REPL / DOCKER_GROUP_REPL each fill their own placeholder with a
+    # SupplementaryGroups= directive (feature on) or delete it (feature off /
+    # other units that don't contain the placeholder — a harmless no-op there).
+    # They are independent lines; systemd merges repeated SupplementaryGroups=
+    # directives, so with both features on the unit lists both groups.
     sed -e "s|__PREFIX__|${PREFIX}|g" \
         -e "s|__USER__|${SERVICE_USER}|g" \
         -e "s|__DB_DIR__|${DB_DIR}|g" \
@@ -272,6 +346,7 @@ render_unit() {
         -e "s|__API_HOST__|${API_HOST}|g" \
         -e "s|__API_PORT__|${API_PORT}|g" \
         -e "${LOG_GROUP_REPL}" \
+        -e "${DOCKER_GROUP_REPL}" \
         "$1" > "${SYSTEMD_DIR}/$(basename "$1")"
 }
 render_unit "${SRC_DIR}/systemd/marnarmon-collector.service"
@@ -326,6 +401,11 @@ if [ "$LOGS_ENABLED" = "true" ]; then
     echo "  Server Logs: enabled  (/logs  /logs/sources)"
 else
     echo "  Server Logs: disabled (re-run this installer and opt in to enable)"
+fi
+if [ "$DOCKER_ENABLED" = "true" ]; then
+    echo "  Docker Monitor: enabled  (/docker/overview  /docker/stacks  /docker/logs)"
+else
+    echo "  Docker Monitor: disabled (re-run this installer when Docker is present to enable)"
 fi
 echo "  Config:     ${CONFIG_FILE}"
 echo "  Database:   ${DB_PATH}"
