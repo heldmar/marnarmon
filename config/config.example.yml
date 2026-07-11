@@ -60,3 +60,22 @@ logs:
   timeout_seconds: 8.0
   # Override only if journalctl isn't on PATH for the service.
   journalctl_path: "journalctl"
+
+docker:
+  # Docker Monitor feature: container/stack CPU, RAM, disk + live container logs
+  # in the dashboard. OFF by default. When true, the API shells out to the
+  # `docker` CLI (docker stats / ps / system df / logs), so the 'marnarmon'
+  # service user must be able to reach the docker socket (typically membership
+  # of the 'docker' group — note that group effectively grants root, so enable
+  # this only on hosts where that trade-off is acceptable). The dashboard hides
+  # the whole "Docker" section unless the API reports this as enabled.
+  enabled: false
+  # Path to the docker binary (override only if it isn't on the service's PATH).
+  path: "docker"
+  # Abort any docker command after this many seconds (protects the API; a
+  # `docker stats` snapshot on a busy Pi can take a couple of seconds).
+  timeout_seconds: 8.0
+  # Lines tailed for a container when the client doesn't specify.
+  logs_default_tail: 200
+  # Hard cap on lines tailed per container-logs request (server-side).
+  logs_max_tail: 1000

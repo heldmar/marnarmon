@@ -38,6 +38,13 @@ class Config:
     logs_timeout_seconds: float
     logs_journalctl_path: str
 
+    # Docker Monitor (container/stack resources + live logs). Opt-in like logs.
+    docker_enabled: bool
+    docker_path: str
+    docker_timeout_seconds: float
+    docker_logs_default_tail: int
+    docker_logs_max_tail: int
+
     raw: dict = field(default_factory=dict, repr=False)
 
 
@@ -113,6 +120,21 @@ def load_config(path: str | None = None) -> Config:
         raise ValueError("logs.timeout_seconds must be > 0")
     logs_journalctl_path = str(logs.get("journalctl_path") or "journalctl")
 
+    # Docker Monitor. Off by default; conservative caps for a Raspberry Pi.
+    docker = data.get("docker", {}) or {}
+    docker_enabled = bool(docker.get("enabled", False))
+    docker_path = str(docker.get("path") or "docker")
+    docker_timeout_seconds = float(docker.get("timeout_seconds", 8.0))
+    if docker_timeout_seconds <= 0:
+        raise ValueError("docker.timeout_seconds must be > 0")
+    docker_logs_max_tail = int(docker.get("logs_max_tail", 1000))
+    if docker_logs_max_tail < 1:
+        raise ValueError("docker.logs_max_tail must be >= 1")
+    docker_logs_default_tail = int(docker.get("logs_default_tail", 200))
+    if docker_logs_default_tail < 1:
+        raise ValueError("docker.logs_default_tail must be >= 1")
+    docker_logs_default_tail = min(docker_logs_default_tail, docker_logs_max_tail)
+
     return Config(
         host_name=host_name,
         interval_minutes=interval,
@@ -131,5 +153,10 @@ def load_config(path: str | None = None) -> Config:
         logs_default_window_minutes=logs_default_window_minutes,
         logs_timeout_seconds=logs_timeout_seconds,
         logs_journalctl_path=logs_journalctl_path,
+        docker_enabled=docker_enabled,
+        docker_path=docker_path,
+        docker_timeout_seconds=docker_timeout_seconds,
+        docker_logs_default_tail=docker_logs_default_tail,
+        docker_logs_max_tail=docker_logs_max_tail,
         raw=data,
     )

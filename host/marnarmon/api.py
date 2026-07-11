@@ -6,14 +6,19 @@ Endpoints:
   GET /metrics/history   - time series; ?minutes=N (default from config)
   GET /logs              - filtered systemd-journal lines (when logs enabled)
   GET /logs/sources      - selectable log sources (units + kernel)
+  GET /docker/overview   - aggregate container CPU/RAM/disk + counts (when docker enabled)
+  GET /docker/stacks     - Compose stacks with per-container meters (when docker enabled)
+  GET /docker/logs       - live tail for one container (when docker enabled)
 
 Optional bearer-token auth: when api.token is set in config, all /metrics,
-/logs and /health (except the open root) require  Authorization: Bearer <token>.
-CORS origins are configurable via api.allowed_origins (default ["*"]).
+/logs, /docker and /health (except the open root) require
+Authorization: Bearer <token>. CORS origins are configurable via
+api.allowed_origins (default ["*"]).
 
-The /logs endpoints are gated by logs.enabled in config (default off): they
-return 503 {"code": "logs_disabled"} when disabled, and the dashboard uses the
-`features.logs` flag on /health to decide whether to show the logs UI at all.
+The /logs and /docker endpoints are gated by logs.enabled / docker.enabled in
+config (default off): they return 503 {"code": ...} when disabled, and the
+dashboard uses the `features.logs` / `features.docker` flags on /health to
+decide whether to show each section at all.
 
 Run:  uvicorn marnarmon.api:app --host 0.0.0.0 --port 8787
 """
@@ -27,7 +32,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from . import __version__, db, logs as logsmod
+from . import __version__, db, docker as dockermod, logs as logsmod
 from .config import load_config
 
 cfg = load_config()
@@ -72,8 +77,9 @@ def _parse_window(window: Optional[str], minutes: Optional[int]) -> int:
 
 
 def _features() -> dict:
-    """Capabilities the dashboard adapts to. `logs` gates the whole logs UI."""
-    return {"logs": cfg.logs_enabled}
+    """Capabilities the dashboard adapts to. `logs` gates the whole logs UI;
+    `docker` gates the whole Docker Monitor section."""
+    return {"logs": cfg.logs_enabled, "docker": cfg.docker_enabled}
 
 
 @app.get("/")
@@ -226,3 +232,78 @@ def logs_sources(_: None = Depends(require_token)):
         _sources_cache["ts"] = now
 
     return {"host": cfg.host_name, "sources": sources}
+
+
+# --------------------------------------------------------------------------- #
+# Docker Monitor — opt-in, gated by cfg.docker_enabled
+# --------------------------------------------------------------------------- #
+_DOCKER_DISABLED = {
+    "code": "docker_disabled",
+    "message": "Docker Monitor is not enabled on this host.",
+}
+
+
+@app.get("/docker/overview")
+def docker_overview(_: None = Depends(require_token)):
+    if not cfg.docker_enabled:
+        return JSONResponse(status_code=503, content=_DOCKER_DISABLED)
+
+    base = {"host": cfg.host_name, "docker_ok": True, "error": None}
+    try:
+        data = dockermod.overview(
+            docker_path=cfg.docker_path,
+            timeout_seconds=cfg.docker_timeout_seconds,
+        )
+    except dockermod.DockerError as exc:
+        # The daemon being unreachable is an expected, recoverable state the
+        # dashboard renders as a banner — 200 with docker_ok=false, not a 5xx.
+        return {**base, "docker_ok": False, "error": str(exc),
+                "totals": None, "stats": None}
+    return {**base, **data}
+
+
+@app.get("/docker/stacks")
+def docker_stacks(_: None = Depends(require_token)):
+    if not cfg.docker_enabled:
+        return JSONResponse(status_code=503, content=_DOCKER_DISABLED)
+
+    base = {"host": cfg.host_name, "docker_ok": True, "error": None}
+    try:
+        stacks = dockermod.stacks(
+            docker_path=cfg.docker_path,
+            timeout_seconds=cfg.docker_timeout_seconds,
+        )
+    except dockermod.DockerError as exc:
+        return {**base, "docker_ok": False, "error": str(exc), "stacks": []}
+    return {**base, "stacks": stacks}
+
+
+@app.get("/docker/logs")
+def docker_logs(
+    _: None = Depends(require_token),
+    container: str = Query(..., description="container id or name"),
+    tail: Optional[int] = Query(default=None, ge=1, description="lines to tail"),
+    since: Optional[str] = Query(default=None, description="epoch seconds or duration (10m, 2h)"),
+):
+    if not cfg.docker_enabled:
+        return JSONResponse(status_code=503, content=_DOCKER_DISABLED)
+
+    lim = min(tail or cfg.docker_logs_default_tail, cfg.docker_logs_max_tail)
+    try:
+        lines = dockermod.container_logs(
+            container,
+            tail=lim,
+            since=since,
+            docker_path=cfg.docker_path,
+            timeout_seconds=cfg.docker_timeout_seconds,
+        )
+    except dockermod.DockerError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    return {
+        "host": cfg.host_name,
+        "container": container,
+        "lines": lines,
+        "count": len(lines),
+        "tail": lim,
+    }
