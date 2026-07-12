@@ -2,7 +2,7 @@ import ResourceMeter from "./ResourceMeter.jsx";
 
 // One container = one 5-column grid row (DOCKER_MONITOR_SPEC.md §5):
 // [ name | RAM meter | CPU meter | Disk meter | View-logs ].
-export default function ContainerRow({ container, maxDisk, onViewLogs }) {
+export default function ContainerRow({ container, maxDisk, memUnavailable = false, onViewLogs }) {
   const { name, service, state, mem, cpu, disk } = container;
   return (
     <div className="crow">
@@ -21,12 +21,15 @@ export default function ContainerRow({ container, maxDisk, onViewLogs }) {
         usedLabel={mem.usedLabel}
         limitLabel={mem.limitLabel}
         pct={mem.pct}
+        hostPct={mem.hostPct}
+        unavailable={memUnavailable}
       />
       <ResourceMeter
         kind="CPU"
         usedLabel={cpu.usedLabel}
         limitLabel={cpu.limitLabel}
         pct={cpu.pct}
+        hostPct={cpu.hostPct}
       />
       <ResourceMeter
         kind="Disk"

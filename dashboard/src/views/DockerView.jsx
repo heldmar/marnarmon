@@ -55,11 +55,13 @@ function containerVM(c) {
       usedLabel: fmtBytes(mem.used_bytes),
       limitLabel: mem.limit_bytes != null ? fmtBytes(mem.limit_bytes) : null,
       pct: mem.percent != null ? mem.percent : null,
+      hostPct: mem.host_percent != null ? mem.host_percent : null,
     },
     cpu: {
       usedLabel: `${(cpu.used_cores ?? 0).toFixed(2)} cores`,
       limitLabel: cpu.limit_cores != null ? `${fmtCores(cpu.limit_cores)} cores` : null,
       pct: cpu.percent != null ? cpu.percent : null,
+      hostPct: cpu.host_percent != null ? cpu.host_percent : null,
     },
     disk: {
       bytes: disk.bytes ?? 0,
@@ -93,6 +95,10 @@ export default function DockerView({ health, theme, onToggleTheme }) {
   const disabled = overview.errorCode === "docker_disabled";
   const dockerOk = ov ? ov.docker_ok !== false : true;
   const daemonError = ov && ov.docker_ok === false ? ov.error : null;
+  // Host memory accounting is off (e.g. Pi kernel with the memory cgroup
+  // disabled): docker reports 0 B per container, so RAM meters/gauge hatch and
+  // we surface a one-line explanation instead of a misleading 0.
+  const memUnavailable = ov?.totals?.mem?.available === false;
 
   const stacks = useMemo(
     () => (stacksPoll.data?.stacks || []).map(stackVM),
@@ -176,6 +182,18 @@ export default function DockerView({ health, theme, onToggleTheme }) {
       {ov && dockerOk ? (
         <>
           <div className="section-label">Total consumed by all containers</div>
+          {memUnavailable ? (
+            <div className="banner info">
+              Memory stats unavailable — this host's kernel has the memory cgroup
+              disabled, so Docker reports 0&nbsp;B of RAM per container. CPU and
+              disk are unaffected.
+              <div className="muted" style={{ marginTop: 4 }}>
+                To enable it on a Raspberry Pi, add{" "}
+                <code>cgroup_enable=memory cgroup_memory=1</code> to{" "}
+                <code>/boot/firmware/cmdline.txt</code> and reboot.
+              </div>
+            </div>
+          ) : null}
           <DockerGauges totals={ov.totals} />
 
           <div className="stats">
@@ -209,7 +227,8 @@ export default function DockerView({ health, theme, onToggleTheme }) {
           <div className="card meters-legend">
             <span className="lg">
               <span className="sw util" />
-              RAM / CPU — fills toward each container's limit
+              RAM / CPU — fills toward the container's limit, or its share of the
+              host when no limit is set
             </span>
             <span className="lg">
               <span className="sw disk" />
@@ -217,7 +236,7 @@ export default function DockerView({ health, theme, onToggleTheme }) {
             </span>
             <span className="lg">
               <span className="sw nolim" />
-              no limit set
+              hatched — no data (unavailable)
             </span>
           </div>
 
@@ -235,6 +254,7 @@ export default function DockerView({ health, theme, onToggleTheme }) {
                   setCollapsed((prev) => ({ ...prev, [s.name]: !prev[s.name] }))
                 }
                 maxDisk={maxDisk}
+                memUnavailable={memUnavailable}
                 onViewLogs={(c) =>
                   setSelected({ name: c.name, stack: c.stack, image: c.image })
                 }

@@ -6,7 +6,7 @@ export function colorFor(value) {
   return "var(--good)";
 }
 
-export default function Gauge({ value = 0, size = 132, stroke = 12, unit = "%" }) {
+export default function Gauge({ value = 0, size = 132, stroke = 12, unit = "%", unavailable = false }) {
   const v = Math.max(0, Math.min(100, Number(value) || 0));
   const r = (size - stroke) / 2;
   const cx = size / 2;
@@ -17,6 +17,42 @@ export default function Gauge({ value = 0, size = 132, stroke = 12, unit = "%" }
   const dash = circumference * arc;
   const offset = dash * (1 - v / 100);
   const color = colorFor(v);
+
+  // No metric to plot (e.g. host memory cgroup disabled): show an empty track
+  // and an explicit "n/a" so it never reads as a real 0%.
+  if (unavailable) {
+    return (
+      <svg
+        width={size}
+        height={size}
+        viewBox={`0 0 ${size} ${size}`}
+        role="img"
+        aria-label="unavailable"
+      >
+        <g transform={`rotate(135 ${cx} ${cy})`}>
+          <circle
+            cx={cx}
+            cy={cy}
+            r={r}
+            fill="none"
+            stroke="var(--grid)"
+            strokeWidth={stroke}
+            strokeLinecap="round"
+            strokeDasharray={`${dash} ${circumference}`}
+          />
+        </g>
+        <text
+          x="50%"
+          y="50%"
+          textAnchor="middle"
+          dominantBaseline="central"
+          className="gauge-value gauge-na"
+        >
+          n/a
+        </text>
+      </svg>
+    );
+  }
 
   return (
     <svg

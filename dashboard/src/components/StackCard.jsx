@@ -48,7 +48,7 @@ function Roll({ k, v }) {
 // One collapsible card per Compose project (DOCKER_MONITOR_SPEC.md §4).
 // Header order: caret, cube icon, name/meta, spacer, .stack-roll, .badge — the
 // badge is a SIBLING of .stack-roll so it survives the ≤560px rollup hide.
-export default function StackCard({ stack, collapsed, onToggle, maxDisk, onViewLogs }) {
+export default function StackCard({ stack, collapsed, onToggle, maxDisk, memUnavailable = false, onViewLogs }) {
   function onKeyDown(e) {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
@@ -87,6 +87,7 @@ export default function StackCard({ stack, collapsed, onToggle, maxDisk, onViewL
             key={c.id || c.name}
             container={c}
             maxDisk={maxDisk}
+            memUnavailable={memUnavailable}
             onViewLogs={() => onViewLogs(c)}
           />
         ))}

@@ -9,6 +9,11 @@ export default function DockerGauges({ totals }) {
   const mem = totals?.mem || {};
   const disk = totals?.disk || {};
 
+  // Host memory accounting is off (e.g. Raspberry Pi kernel with the memory
+  // cgroup disabled): docker reports 0 B for every container, so plot "n/a"
+  // instead of a misleading 0%.
+  const memUnavailable = mem.available === false;
+
   return (
     <div className="grid gauges">
       <GaugeCard
@@ -24,11 +29,16 @@ export default function DockerGauges({ totals }) {
       <GaugeCard
         title="Memory"
         value={mem.percent}
+        unavailable={memUnavailable}
         footer={
-          <span>
-            <strong>{fmtBytes(mem.used_bytes)}</strong> of{" "}
-            {fmtBytes(mem.total_bytes)} used by containers
-          </span>
+          memUnavailable ? (
+            <span>Unavailable — host memory cgroup disabled</span>
+          ) : (
+            <span>
+              <strong>{fmtBytes(mem.used_bytes)}</strong> of{" "}
+              {fmtBytes(mem.total_bytes)} used by containers
+            </span>
+          )
         }
       />
       <GaugeCard

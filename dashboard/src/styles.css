@@ -210,6 +210,11 @@ body {
   font-size: 12px;
   fill: var(--text-faint);
 }
+.gauge-na {
+  font-size: 18px;
+  font-weight: 600;
+  fill: var(--text-faint);
+}
 .gauge-foot {
   margin-top: 10px;
   text-align: center;
@@ -281,6 +286,18 @@ body {
   background: rgba(247, 109, 109, 0.1);
   border-color: var(--bad);
   color: var(--bad);
+}
+.banner.info {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--text);
+}
+.banner.info code {
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--grid);
+  font-variant-ligatures: none;
 }
 .muted {
   color: var(--text-dim);
