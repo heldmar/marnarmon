@@ -75,6 +75,13 @@ _SIZE_RE = re.compile(r"^\s*([\d.]+)\s*([a-zA-Z]*)\s*$")
 # "Up 2 hours (healthy)" or "Up 5s (health: starting)".
 _HEALTH_RE = re.compile(r"\((healthy|unhealthy|health: starting)\)")
 
+# ANSI/VT100 control sequences. `docker stats` (streamed — see build_stats_args)
+# wraps each refresh frame in cursor-home / erase-line codes (ESC[H, ESC[K,
+# ESC[J); parse_stats strips them before json-decoding. Also used to split the
+# stream into frames (each frame begins with a cursor-home ESC[H).
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_FRAME_HOME = "\x1b[H"  # cursor-home: docker prints one at the start of each frame
+
 
 class DockerError(RuntimeError):
     """Raised when the docker CLI cannot be run or fails (missing binary,
@@ -177,8 +184,16 @@ def health_label(status: str) -> Optional[str]:
 # Argument building (pure)
 # --------------------------------------------------------------------------- #
 def build_stats_args(docker_path: str = "docker") -> List[str]:
-    """argv for a one-shot per-container resource snapshot (cheap)."""
-    return [docker_path, "stats", "--no-stream", "--format", "{{json .}}"]
+    """argv for a per-container resource snapshot.
+
+    NOTE: deliberately NOT `--no-stream`. `docker stats --no-stream` asks the
+    daemon for a single sample whose precpu_stats is empty, so the CPU delta is
+    computed against zero elapsed time and EVERY container reports CPUPerc
+    "0.00%" (a long-standing docker behaviour). Streaming instead makes the
+    daemon emit refresh frames that each carry a real CPU delta. The stream never
+    exits on its own; `_run_stats` bounds it to a short window and keeps the last
+    complete frame, and parse_stats strips the per-frame ANSI control codes."""
+    return [docker_path, "stats", "--format", "{{json .}}"]
 
 
 def build_ps_args(docker_path: str = "docker") -> List[str]:
@@ -289,15 +304,42 @@ def _iter_json_lines(raw_stdout: str):
             yield rec
 
 
+def _last_stats_frame(raw_stdout: str) -> str:
+    """Pick the last COMPLETE refresh frame out of streamed `docker stats` output.
+
+    Streamed stats reprints every container on each refresh, each frame led by a
+    cursor-home (ESC[H) — see build_stats_args. We split on that marker and use
+    the last frame, except the very last one is dropped when it looks truncated
+    (fewer json records than the previous frame), which happens when _run_stats
+    cuts the stream mid-frame. A single frame (or non-streamed input, e.g. tests
+    and the fake docker) passes through unchanged."""
+    if _FRAME_HOME not in raw_stdout:
+        return raw_stdout
+    frames = [f for f in raw_stdout.split(_FRAME_HOME) if f.strip()]
+    if not frames:
+        return raw_stdout
+    if len(frames) >= 2:
+        def _records(frame: str) -> int:
+            return sum(1 for _ in _iter_json_lines(_ANSI_RE.sub("", frame)))
+        if _records(frames[-1]) < _records(frames[-2]):
+            frames.pop()  # trailing frame was cut short -> use the prior full one
+    return frames[-1]
+
+
 def parse_stats(raw_stdout: str) -> Dict[str, dict]:
-    """Parse `docker stats --no-stream --format {{json .}}` into a dict keyed by
-    both container id and name, so a caller can join by whichever ps exposes.
+    """Parse `docker stats --format {{json .}}` into a dict keyed by both
+    container id and name, so a caller can join by whichever ps exposes.
+
+    Input may be a single frame (tests / one-shot) or the multi-frame ANSI
+    stream `_run_stats` returns; we take the last complete frame and strip its
+    VT100 control codes before json-decoding.
 
     Each value: cpu_percent, mem_used/mem_limit (bytes), net_rx/net_tx (bytes,
     cumulative since container start — docker has no per-interval rate here),
     block_read/block_write (bytes)."""
     out: Dict[str, dict] = {}
-    for rec in _iter_json_lines(raw_stdout):
+    frame = _ANSI_RE.sub("", _last_stats_frame(raw_stdout))
+    for rec in _iter_json_lines(frame):
         mem_used, mem_limit = parse_size_pair(rec.get("MemUsage"))
         net_rx, net_tx = parse_size_pair(rec.get("NetIO"))
         blk_r, blk_w = parse_size_pair(rec.get("BlockIO"))
@@ -887,6 +929,54 @@ def _run(args: Sequence[str], timeout_seconds: float) -> str:
     return proc.stdout
 
 
+# `docker stats` is streamed (see build_stats_args) and never exits on its own,
+# so we run it under a short fixed window — long enough for the daemon to emit a
+# couple of refresh frames (each ~500 ms) carrying a real CPU delta — then take
+# whatever it printed. Kept well under the config timeout so the hot path can't
+# stall on it.
+_STATS_STREAM_SECONDS = 2.5
+
+
+def _run_stats(args: Sequence[str], timeout_seconds: float) -> str:
+    """Run the streamed `docker stats` and return its (multi-frame, ANSI) stdout.
+
+    The stream is unbounded, so this always terminates it via a short timeout and
+    keeps the partial output — that's the normal, expected path. subprocess
+    delivers that output as bytes on the exception even under text=True, so we
+    decode it ourselves. A docker that DOES exit (e.g. the test fake, or a daemon
+    error) is handled like any other command."""
+    window = _STATS_STREAM_SECONDS
+    if timeout_seconds and timeout_seconds < window:
+        window = timeout_seconds
+    try:
+        proc = subprocess.run(
+            list(args),
+            capture_output=True,
+            text=True,
+            timeout=window,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise DockerError("docker CLI not found on this host") from exc
+    except subprocess.TimeoutExpired as exc:
+        out = exc.output or b""
+        if isinstance(out, (bytes, bytearray)):
+            out = out.decode("utf-8", "replace")
+        if out.strip():
+            return out  # expected: streamed frames captured before the deadline
+        err = exc.stderr or b""
+        if isinstance(err, (bytes, bytearray)):
+            err = err.decode("utf-8", "replace")
+        detail = err.strip().splitlines()
+        msg = detail[-1] if detail else "docker stats produced no output"
+        raise DockerError(f"docker stats failed: {msg}") from exc
+    if proc.returncode != 0 and not proc.stdout:
+        detail = (proc.stderr or "").strip().splitlines()
+        msg = detail[-1] if detail else f"docker stats exited {proc.returncode}"
+        raise DockerError(f"docker stats failed: {msg}")
+    return proc.stdout
+
+
 def _run_logs(args: Sequence[str], timeout_seconds: float) -> str:
     """`docker logs` writes the container's stderr stream to our stderr, so a
     non-zero exit isn't necessarily an error and both streams are log content.
@@ -965,7 +1055,7 @@ def _get_snapshot(docker_path: str, timeout_seconds: float, cache_seconds: float
     the heavy `docker stats`."""
     def produce():
         containers = parse_ps(_run(build_ps_args(docker_path), timeout_seconds))
-        stats = parse_stats(_run(build_stats_args(docker_path), timeout_seconds))
+        stats = parse_stats(_run_stats(build_stats_args(docker_path), timeout_seconds))
         return containers, stats
 
     return _cached(_snapshot_cache, cache_seconds, produce)

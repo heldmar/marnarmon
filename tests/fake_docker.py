@@ -8,7 +8,7 @@ subprocess wrappers in docker.py run for real against canned output.
 
 It recognizes the argv shapes docker.py builds:
 
-    docker stats --no-stream --format {{json .}}
+    docker stats --format {{json .}}   (streamed; the fake exits after one frame)
     docker ps -a -s --format {{json .}}
     docker system df [--format {{json .}}]
     docker system df -v --format {{json .}}

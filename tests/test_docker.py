@@ -124,8 +124,9 @@ def test_classify_state():
 # Argument building — including the security whitelist (critical)
 # --------------------------------------------------------------------------- #
 def test_build_simple_args():
-    check("stats no-stream json", D.build_stats_args("docker") ==
-          ["docker", "stats", "--no-stream", "--format", "{{json .}}"])
+    # Streamed (NOT --no-stream): --no-stream reports 0% CPU for every container.
+    check("stats streamed json", D.build_stats_args("docker") ==
+          ["docker", "stats", "--format", "{{json .}}"])
     check("ps -a -s json", D.build_ps_args("docker") ==
           ["docker", "ps", "-a", "-s", "--format", "{{json .}}"])
     # Cheap summary df must NOT carry -v.
@@ -265,6 +266,38 @@ def test_parse_stats():
     check("block_read", web["block_read"] == 5 * 1000 ** 2)
     # Malformed + blank lines skipped: exactly 2 containers survived.
     check("2 unique containers", len(list(D._unique_stats(s))) == 2)
+
+
+def test_parse_stats_streamed_frames():
+    """Streamed `docker stats` output: each refresh frame is led by a cursor-home
+    (ESC[H) and every line trails an erase-line (ESC[K). parse_stats must strip
+    the control codes and read the LAST COMPLETE frame — so the fresh per-frame
+    CPU delta wins, not the stale first frame (this is the whole point of
+    streaming instead of --no-stream, which reads 0% for everyone)."""
+    H, K, J = "\x1b[H", "\x1b[K", "\x1b[J"
+    def frame(cpu_web, cpu_db):
+        return (
+            H + '{"ID":"aaaaaaaaaaaa","Name":"shop_web_1","CPUPerc":"%s",'
+            '"MemUsage":"64MiB / 256MiB","MemPerc":"25.00%%","NetIO":"1.2kB / 3.4kB",'
+            '"BlockIO":"5MB / 2MB"}' % cpu_web + K + "\n"
+            '{"ID":"bbbbbbbbbbbb","Name":"shop_db_1","CPUPerc":"%s",'
+            '"MemUsage":"128MiB / 512MiB","MemPerc":"25.00%%","NetIO":"0B / 0B",'
+            '"BlockIO":"10MB / 0B"}' % cpu_db + K + "\n" + K + "\n" + J
+        )
+    # First frame reads 0% (the --no-stream symptom); later frames have real deltas.
+    streamed = frame("0.00%", "0.00%") + frame("12.50%", "3.00%")
+    s = D.parse_stats(streamed)
+    check("streamed: last frame wins for web", s["shop_web_1"]["cpu_percent"] == 12.5)
+    check("streamed: last frame wins for db", s["shop_db_1"]["cpu_percent"] == 3.0)
+    check("streamed: no ANSI leaks into id", s["aaaaaaaaaaaa"]["name"] == "shop_web_1")
+    check("streamed: 2 unique containers", len(list(D._unique_stats(s))) == 2)
+    # A truncated trailing frame (stream cut mid-write) is dropped for the prior
+    # complete one, so no container is lost and values stay real.
+    truncated = frame("12.50%", "3.00%") + H + \
+        '{"ID":"aaaaaaaaaaaa","Name":"shop_web_1","CPUPerc":"99'  # torn line
+    s2 = D.parse_stats(truncated)
+    check("truncated: falls back to full frame", s2["shop_web_1"]["cpu_percent"] == 12.5)
+    check("truncated: db still present", "shop_db_1" in s2)
 
 
 def test_parse_ps():
@@ -676,7 +709,10 @@ def test_api_docker_overview_shape_with_token():
     check("overview has totals", body.get("totals") is not None)
     check("overview stats running=3", body["stats"]["running"] == 3)
 
-    # Daemon-down path returns 200 with docker_ok=false (banner, not 5xx).
+    # Daemon-down path returns 200 with docker_ok=false (banner, not 5xx). Drop
+    # the memoized snapshot first so this request actually shells out (the prior
+    # healthy call populated the cache within its TTL).
+    D.reset_cache()
     os.environ["FAKE_DOCKER_FAIL"] = "1"
     try:
         r2 = client.get("/docker/overview")

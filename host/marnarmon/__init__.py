@@ -6,4 +6,6 @@ FastAPI service. Designed to run on any Linux host (Raspberry Pi, EC2,
 Lightsail) via systemd.
 """
 
-__version__ = "0.1.0"
+# Kept in lockstep with the released git tag (vX.Y.Z). The API surfaces it at
+# /health and as the FastAPI app version, so bump it in the same commit you tag.
+__version__ = "1.0.4"
