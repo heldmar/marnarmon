@@ -42,13 +42,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
-    networks:
-      - default
-      - npm-network
-
-networks:
-  npm-network:
-    # Pre-existing network created by Nginx Proxy Manager's own stack.
-    # Joining it lets NPM reach this container by name (forward to
-    # "marnarmon-dashboard" port 80) instead of the host IP.
-    external: true
+    # To front this with a reverse proxy that reaches the container by name
+    # (Nginx Proxy Manager, Traefik, …), join that proxy's shared external
+    # network — see "Deploying behind a reverse proxy" in README.md. Left out
+    # here so `docker compose up` works out-of-the-box on any single host.

@@ -135,21 +135,33 @@ Apache-2.0, same as the host agent — see the repo-root [`LICENSE`](../LICENSE)
 
 ## Deploying behind a reverse proxy (e.g. Nginx Proxy Manager)
 
-`docker-compose.yml` joins an `external: true` network named `npm-network` in
-addition to its default network. This lets a reverse proxy container (NPM,
-Traefik, etc. — anything sharing that Docker network) forward to this
-container **by container name** instead of the host IP:
+The shipped `docker-compose.yml` runs **standalone** — it joins no external
+network, so `docker compose up` works on a fresh host with no prior setup.
+
+If you front the dashboard with a reverse proxy that reaches containers **by
+name** (Nginx Proxy Manager, Traefik, … — anything sharing a Docker network),
+add that proxy's network so the two containers can talk directly. Append to
+`docker-compose.yml`:
+
+```yaml
+services:
+  dashboard:
+    networks:
+      - default
+      - proxy-network      # your reverse proxy's shared network
+
+networks:
+  proxy-network:
+    external: true         # created by the proxy's own stack; must already exist
+    name: npm-network      # <- set to your proxy network's real name
+```
+
+Then point the proxy at the container:
 
 - Forward Hostname/IP: `marnarmon-dashboard`
 - Forward Port: `80` (the container's internal nginx port — not the
   host-mapped `8080`; container-to-container traffic on a Docker bridge
   bypasses host port mappings)
-
-If your proxy's shared network has a different name, edit the `networks:`
-block in `docker-compose.yml` accordingly. If you don't use a reverse proxy at
-all, the `npm-network` block is harmless to leave in place as long as that
-network exists on the host (Compose will fail to start otherwise) — remove it
-if you have no such network.
 
 `pull_policy: build` is set on the service so that Portainer's "Re-pull image
 and redeploy" doesn't fail with `pull access denied` — this image is
