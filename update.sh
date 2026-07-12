@@ -215,11 +215,15 @@ detect_dash_dir() {
         --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' \
         2>/dev/null | grep -v '^$' || return 1
 }
-# Is this dashboard managed by Portainer? (git-stack / CICD path)
+# Is this dashboard a Portainer-OWNED stack that Portainer rebuilds itself?
+# Signature: Portainer stores Git/Web-editor stacks under its own data volume at
+# `/data/compose/<id>/…`, so the compose working_dir lives there (not on a user
+# path we can drive). A local/filesystem stack that points at a user directory
+# (e.g. ~/stacks/…) is NOT owned this way and IS updatable via plain compose.
 dash_is_portainer() {
     command -v docker >/dev/null 2>&1 || return 1
     local wd; wd="$(detect_dash_dir || true)"
-    [ -n "$wd" ] && echo "$wd" | grep -q 'portainer' && return 0
+    [ -n "$wd" ] && echo "$wd" | grep -qE '/data/compose/|portainer' && return 0
     docker inspect "$DASH_CONTAINER" --format '{{ json .Config.Labels }}' 2>/dev/null \
         | grep -q 'io.portainer' && return 0
     return 1
