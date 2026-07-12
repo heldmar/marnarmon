@@ -254,6 +254,7 @@ def docker_overview(_: None = Depends(require_token)):
             docker_path=cfg.docker_path,
             timeout_seconds=cfg.docker_timeout_seconds,
             stats_cache_seconds=cfg.docker_stats_cache_seconds,
+            df_cache_seconds=cfg.docker_df_cache_seconds,
             events_cache_seconds=cfg.docker_events_cache_seconds,
         )
     except dockermod.DockerError as exc:

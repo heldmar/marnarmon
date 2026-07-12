@@ -868,6 +868,69 @@ def test_overview_events_failure_degrades(tmp_path=None):
         D.reset_cache()
 
 
+def test_overview_caches_summary_df(tmp_path=None):
+    """The summary `docker system df` is cached: a second overview() within the
+    TTL does NOT re-run it (the cache slot's timestamp is unchanged), and the
+    disk totals are served identically from cache."""
+    import tempfile
+    tmp = str(tmp_path) if tmp_path is not None else tempfile.mkdtemp()
+    docker = _fake_docker_path(tmp)
+    D.reset_cache()
+    try:
+        ov1 = D.overview(docker_path=docker, timeout_seconds=8.0,
+                         stats_cache_seconds=30.0, df_cache_seconds=60.0)
+        at1 = D._df_summary_cache["at"]
+        check("summary df cached (slot populated)", D._df_summary_cache["data"] is not None)
+        check("disk used from df", ov1["totals"]["disk"]["used_bytes"] > 0)
+
+        ov2 = D.overview(docker_path=docker, timeout_seconds=8.0,
+                         stats_cache_seconds=30.0, df_cache_seconds=60.0)
+        check("summary df NOT re-fetched within TTL", D._df_summary_cache["at"] == at1)
+        check("disk totals identical from cache",
+              ov1["totals"]["disk"]["used_bytes"] == ov2["totals"]["disk"]["used_bytes"])
+    finally:
+        D.reset_cache()
+
+
+def test_mem_available_flag():
+    """totals.mem.available is False only when there ARE running containers but
+    the summed memory is 0 (the host memory cgroup is disabled — the Pi default);
+    True when memory is reported, and True when there are no running containers."""
+    running_container = [c for c in D.parse_ps(PS) if c["state_raw"].lower() == "running"][:1]
+
+    # cgroup off: running containers, zero mem reported by docker stats.
+    off = D.build_overview(running_container, {}, {}, host_mem_total=HOST_MEM,
+                           host_cores=4, host_disk_total=1)
+    check("mem unavailable when running + zero mem", off["totals"]["mem"]["available"] is False)
+
+    # real memory reported -> available.
+    on = D.build_overview(D.parse_ps(PS), D.parse_stats(STATS), {},
+                          host_mem_total=HOST_MEM, host_cores=4, host_disk_total=1)
+    check("mem available when memory reported", on["totals"]["mem"]["available"] is True)
+
+    # nothing running -> not flagged as unavailable.
+    empty = D.build_overview([], {}, {}, host_mem_total=HOST_MEM, host_cores=4,
+                             host_disk_total=1)
+    check("mem available when nothing running", empty["totals"]["mem"]["available"] is True)
+
+
+def test_container_host_percent():
+    """Per-container mem/cpu carry host_percent (share of whole host) — the UI's
+    fallback meter fill when the container sets no explicit limit."""
+    web = next(c for c in D.parse_ps(PS) if c["name"] == "shop_web_1")
+    vm = D._container_vm(web, D.parse_stats(STATS), HOST_MEM, host_cores=4)
+    # web: 64MiB used of an 8GiB host.
+    check("mem host_percent = used/host",
+          abs(vm["mem"]["host_percent"] - (64 * 1024 ** 2 / HOST_MEM * 100)) < 1e-6)
+    # web: 12.5% CPU == 0.125 cores of 4 host cores.
+    check("cpu host_percent = cores/host_cores",
+          abs(vm["cpu"]["host_percent"] - (0.125 / 4 * 100)) < 1e-6)
+    # No host_cores available -> host_percent None (no divide-by-zero).
+    vm0 = D._container_vm(web, D.parse_stats(STATS), 0, host_cores=0)
+    check("cpu host_percent None without host_cores", vm0["cpu"]["host_percent"] is None)
+    check("mem host_percent None without host_mem", vm0["mem"]["host_percent"] is None)
+
+
 # --------------------------------------------------------------------------- #
 # Bare runner (no pytest) — mirrors test_logs.py main().
 # --------------------------------------------------------------------------- #
@@ -916,6 +979,9 @@ def main():
         test_cache_layer,
         test_overview_and_stacks_caching_end_to_end,
         test_overview_events_failure_degrades,
+        test_overview_caches_summary_df,
+        test_mem_available_flag,
+        test_container_host_percent,
     ]
     print("Running MarNarMon docker tests...")
     for t in tests:

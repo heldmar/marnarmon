@@ -582,6 +582,7 @@ def group_stacks(
     host_mem_total: int,
     cpu_limits: Optional[Dict[str, Optional[float]]] = None,
     volumes_by_container: Optional[Dict[str, float]] = None,
+    host_cores: int = 0,
 ) -> List[dict]:
     """Join ps containers with their stats and group them into Compose stacks.
 
@@ -611,7 +612,9 @@ def group_stacks(
     for key in order:
         members = buckets[key]
         vms = [
-            _container_vm(c, stats, host_mem_total, cpu_limits, volumes_by_container)
+            _container_vm(
+                c, stats, host_mem_total, cpu_limits, volumes_by_container, host_cores
+            )
             for c in members
         ]
         stacks.append(_stack_vm(key, vms))
@@ -624,6 +627,7 @@ def _container_vm(
     host_mem_total: int,
     cpu_limits: Optional[Dict[str, Optional[float]]] = None,
     volumes_by_container: Optional[Dict[str, float]] = None,
+    host_cores: int = 0,
 ) -> dict:
     """Build the per-container view model (identity, state, mem/cpu/disk)."""
     st = stats.get(c["id"]) or stats.get(c["id"][:12]) or stats.get(c["name"]) or {}
@@ -633,9 +637,15 @@ def _container_vm(
     # Treat a limit within 1% of host RAM (or zero) as "no explicit limit".
     has_mem_limit = bool(mem_limit) and host_mem_total and mem_limit < host_mem_total * 0.99
     mem_percent = (mem_used / mem_limit * 100.0) if has_mem_limit and mem_limit else None
+    # Share of the whole host's RAM. The UI fills the meter with this when the
+    # container has no explicit limit (so real usage is visible, not hatched).
+    mem_host_percent = (mem_used / host_mem_total * 100.0) if host_mem_total else None
 
     cpu_percent = float(st.get("cpu_percent", 0.0))
     used_cores = cpu_percent / 100.0  # docker CPU%: 100% == one full core
+    # Share of all host cores (docker CPU% is already normalized to one core, so
+    # divide by core count). The UI's fallback fill when no CPU limit is set.
+    cpu_host_percent = (used_cores / host_cores * 100.0) if host_cores else None
 
     # CPU limit from the batched inspect (None = genuinely unlimited). Look up by
     # full then short id, mirroring the stats lookup above.
@@ -668,13 +678,15 @@ def _container_vm(
         "mem": {
             "used_bytes": mem_used,
             "limit_bytes": mem_limit if has_mem_limit else None,
-            "percent": mem_percent,
+            "percent": mem_percent,           # used vs limit; None when unlimited
+            "host_percent": mem_host_percent,  # used vs host RAM (fallback fill)
         },
         "cpu": {
             "used_cores": used_cores,
             "used_percent": cpu_percent,
             "limit_cores": cpu_limit_cores,   # None = no CPU limit set
             "percent": cpu_util_percent,      # used vs limit; None when unlimited
+            "host_percent": cpu_host_percent,  # used vs all host cores (fallback fill)
         },
         "disk": {
             "bytes": disk_bytes,
@@ -734,7 +746,7 @@ def build_overview(
     caller: they need cross-request state (the previous stats sample) / a separate
     `docker events` query, which live in the I/O layer, not this pure function.
     """
-    stacks = group_stacks(containers, stats, host_mem_total)
+    stacks = group_stacks(containers, stats, host_mem_total, host_cores=host_cores)
 
     cpu_cores = sum(s.get("cpu_percent", 0.0) for s in _unique_stats(stats)) / 100.0
     mem_used = sum(s.get("mem_used", 0.0) for s in _unique_stats(stats))
@@ -760,6 +772,12 @@ def build_overview(
                 "percent": (mem_used / host_mem_total * 100.0) if host_mem_total else 0.0,
                 "used_bytes": mem_used,
                 "total_bytes": host_mem_total,
+                # False when the host kernel's memory cgroup is disabled: docker
+                # stats then reports MemUsage=0 for every running container (a
+                # well-known Raspberry Pi default). The UI uses this to explain
+                # the gap instead of showing a misleading 0. Heuristic: running
+                # containers always use *some* RAM, so all-zero => accounting off.
+                "available": not (running > 0 and mem_used == 0),
             },
             "disk": {
                 "percent": (disk_used / host_disk_total * 100.0) if host_disk_total else 0.0,
@@ -906,6 +924,7 @@ def _run_logs(args: Sequence[str], timeout_seconds: float) -> str:
 # --------------------------------------------------------------------------- #
 _CACHE_LOCK = threading.Lock()
 _snapshot_cache: dict = {"data": None, "at": 0.0}
+_df_summary_cache: dict = {"data": None, "at": 0.0}
 _df_volumes_cache: dict = {"data": None, "at": 0.0}
 _restarts_cache: dict = {"data": None, "at": 0.0}
 _net_prev: Dict[str, tuple] = {}
@@ -916,6 +935,7 @@ def reset_cache() -> None:
     or from tests to guarantee a cold start."""
     with _CACHE_LOCK:
         _snapshot_cache["data"] = None
+        _df_summary_cache["data"] = None
         _df_volumes_cache["data"] = None
         _restarts_cache["data"] = None
         _net_prev.clear()
@@ -949,6 +969,24 @@ def _get_snapshot(docker_path: str, timeout_seconds: float, cache_seconds: float
         return containers, stats
 
     return _cached(_snapshot_cache, cache_seconds, produce)
+
+
+def _get_summary_df(
+    docker_path: str, timeout_seconds: float, cache_seconds: float
+) -> Dict[str, dict]:
+    """The summary `docker system df` (images/volumes/containers totals) for the
+    overview disk gauge. It's ~1.5 s on a Pi and changes slowly, so it's cached
+    (same TTL as the `-v` variant) to keep it off the every-few-seconds hot path.
+    Best-effort: on failure returns {} so the disk gauge reads 0 rather than 5xx."""
+    def produce():
+        try:
+            return parse_system_df(
+                _run(build_system_df_args(docker_path), timeout_seconds)
+            )
+        except DockerError:
+            return {}
+
+    return _cached(_df_summary_cache, cache_seconds, produce)
 
 
 def _net_rates(stats: Dict[str, dict], active: bool) -> tuple:
@@ -1037,16 +1075,19 @@ def overview(
     timeout_seconds: float = 8.0,
     *,
     stats_cache_seconds: float = 0.0,
+    df_cache_seconds: float = 0.0,
     events_cache_seconds: float = 0.0,
 ) -> dict:
     """Aggregate host-pressure gauges + quick-stat counts across all containers.
 
-    Hot-path subprocesses: `ps` + `stats` (shared snapshot) + the cheap summary
-    `df`. Net throughput is a rate from the in-memory delta (no extra call);
-    `restarts_24h` comes from a cached `docker events` (only re-run on TTL
-    expiry). Net-rate tracking is active only when the snapshot is cached."""
+    Hot-path subprocesses: `ps` + `stats` (shared snapshot). The summary `df` is
+    now CACHED (df_cache_seconds) — it's ~1.5 s on a Pi and changes slowly, so on
+    a cache hit overview costs just the snapshot. Net throughput is a rate from
+    the in-memory delta (no extra call); `restarts_24h` comes from a cached
+    `docker events` (only re-run on TTL expiry). Net-rate tracking is active only
+    when the snapshot is cached."""
     containers, stats = _get_snapshot(docker_path, timeout_seconds, stats_cache_seconds)
-    df = parse_system_df(_run(build_system_df_args(docker_path), timeout_seconds))
+    df = _get_summary_df(docker_path, timeout_seconds, df_cache_seconds)
     net_rx_rate, net_tx_rate = _net_rates(stats, active=stats_cache_seconds > 0)
     restarts_24h = _get_restarts_24h(docker_path, timeout_seconds, events_cache_seconds)
     return build_overview(
@@ -1086,6 +1127,7 @@ def stacks(
         _host_mem_total_bytes(),
         cpu_limits,
         volumes_by_container,
+        host_cores=os.cpu_count() or 1,
     )
 
 
