@@ -51,16 +51,18 @@ const DockerIcon = (
     strokeLinejoin="round"
     aria-hidden="true"
   >
-    {/* container stack */}
-    <rect x="4" y="9.5" width="2.6" height="2.4" />
-    <rect x="7.2" y="9.5" width="2.6" height="2.4" />
-    <rect x="10.4" y="9.5" width="2.6" height="2.4" />
-    <rect x="7.2" y="6.8" width="2.6" height="2.4" />
-    <rect x="10.4" y="6.8" width="2.6" height="2.4" />
-    {/* whale body + wave */}
-    <path d="M2.5 12.2h13.2c.9 0 1.7-.5 2.1-1.3.5.9 1.7 1.2 2.5.6-.1 1.9-1.3 4.6-4 5.3-1.1.3-2.2.4-3.3.4-4 0-7.4-2-9-5z" />
-    {/* spout */}
-    <path d="M19 8.6c.5-.4 1.3-.4 1.8 0-.2.5-.8.8-1.3.7" />
+    {/* container stack, centered on the whale's back */}
+    <rect x="6.7" y="8.8" width="2.8" height="2.9" rx="0.3" />
+    <rect x="9.8" y="8.8" width="2.8" height="2.9" rx="0.3" />
+    <rect x="12.9" y="8.8" width="2.8" height="2.9" rx="0.3" />
+    <rect x="9.8" y="5.7" width="2.8" height="2.9" rx="0.3" />
+    <rect x="12.9" y="5.7" width="2.8" height="2.9" rx="0.3" />
+    {/* rounded whale hull carrying the stack */}
+    <path d="M3.2 11.9a8 6 0 0 0 16 0z" />
+    {/* tail fluke at the stern */}
+    <path d="M16.9 11.9c1-.3 1.7-1.2 1.9-2.3.5.5 1.2.7 1.9.6-.2 1.3-1.1 2.4-2.4 2.8" />
+    {/* spout at the head */}
+    <path d="M5.1 11.5c-.5-.9-.3-2 .5-2.6" />
   </svg>
 );
 

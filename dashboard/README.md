@@ -49,6 +49,7 @@ container at start, so no rebuild needed to repoint it):
 | `API_UPSTREAM` | `http://localhost:8787` | Where nginx forwards `/api/` — the host agent **as reached from the container** (host LAN IP). Only used in same-origin mode. |
 | `REFRESH_SECONDS` | `300` | Metrics poll interval (5 min) |
 | `LOGS_REFRESH_SECONDS` | `10` | Server Logs "Live" auto-refresh interval. Only relevant when the host has Server Logs enabled. |
+| `DOCKER_REFRESH_SECONDS` | `15` | Docker Monitor "Live" auto-refresh interval. Kept modest so each poll's `docker` CLI shell-out stays light on a Pi. Only relevant when the host has Docker Monitor enabled. |
 | `API_TOKEN` | _(empty)_ | Bearer token, only if the host API has auth enabled |
 
 `API_TOKEN` must match the host's `api.token`. In the default same-origin proxy
@@ -87,6 +88,7 @@ docker run -d -p 8080:80 \
   -e API_UPSTREAM="http://host.docker.internal:8787" --add-host host.docker.internal:host-gateway \
   -e REFRESH_SECONDS=300 \
   -e LOGS_REFRESH_SECONDS=10 \
+  -e DOCKER_REFRESH_SECONDS=15 \
   -e API_TOKEN="" \
   marnarmon-dashboard
 ```

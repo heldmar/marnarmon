@@ -27,9 +27,10 @@ services:
       # Server Logs "Live" auto-refresh interval in seconds (default 10). Only
       # used when Server Logs is enabled on the host agent (logs.enabled).
       LOGS_REFRESH_SECONDS: "10"
-      # Docker Monitor "Live" auto-refresh interval in seconds (default 5). Only
-      # used when Docker Monitor is enabled on the host agent (docker.enabled).
-      DOCKER_REFRESH_SECONDS: "5"
+      # Docker Monitor "Live" auto-refresh interval in seconds (default 15;
+      # kept modest so each poll's docker CLI shell-out stays light on a Pi).
+      # Only used when Docker Monitor is enabled on the host agent (docker.enabled).
+      DOCKER_REFRESH_SECONDS: "15"
       # Bearer token if the host API has auth enabled. Do NOT hardcode a secret
       # here (this file is public) — set it as a stack/environment variable
       # (Portainer: stack "Environment variables"; CLI: an .env file). In the
