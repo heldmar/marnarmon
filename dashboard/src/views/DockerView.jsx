@@ -18,6 +18,17 @@ function fmtCores(cores) {
     .replace(/\.?0+$/, "");
 }
 
+// CPU as a percentage of one core — the figure `docker stats` shows. Used as the
+// primary per-container/stack CPU label because cores round busy-but-light
+// containers to "0.00 cores": a WordPress idling at 0.3% of a core is 0.003
+// cores. Keep two decimals below 1% so low, live usage is visible and moves;
+// coarser above that. Trailing zeros trimmed ("0.32%", "2.5%", "17%").
+function fmtCpuPct(percent) {
+  const p = Number(percent) || 0;
+  const decimals = p < 1 ? 2 : p < 10 ? 1 : 0;
+  return `${p.toFixed(decimals).replace(/\.?0+$/, "")}%`;
+}
+
 // A short lifecycle note appended to the service line so state is never
 // colour-only (a11y — see spec §10 / states matrix §8.1).
 function stateNote(c) {
@@ -58,7 +69,10 @@ function containerVM(c) {
       hostPct: mem.host_percent != null ? mem.host_percent : null,
     },
     cpu: {
-      usedLabel: `${(cpu.used_cores ?? 0).toFixed(2)} cores`,
+      // Primary label is the docker CPU% (share of one core); it stays visible
+      // and live at low usage where cores would read "0.00". Fill semantics are
+      // unchanged (vs limit when set, else share of host).
+      usedLabel: fmtCpuPct(cpu.used_percent),
       limitLabel: cpu.limit_cores != null ? `${fmtCores(cpu.limit_cores)} cores` : null,
       pct: cpu.percent != null ? cpu.percent : null,
       hostPct: cpu.host_percent != null ? cpu.host_percent : null,
@@ -77,7 +91,9 @@ function stackVM(s) {
     health: s.health || "ok",
     healthLabel: s.health_label || "Healthy",
     memLabel: fmtBytes(s.mem_used_bytes),
-    cpuLabel: (s.cpu_used_cores ?? 0).toFixed(2),
+    // Summed CPU% across the stack's containers (cores → % of one core), so the
+    // header matches the per-container %-labels and isn't stuck at "0.00".
+    cpuLabel: fmtCpuPct((s.cpu_used_cores ?? 0) * 100),
     diskLabel: fmtBytes(s.disk_bytes),
     containers: (s.containers || []).map(containerVM),
   };

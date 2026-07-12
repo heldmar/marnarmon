@@ -28,7 +28,7 @@ dashboard adapts to (see `/health`).
 ```json
 {
   "service": "marnarmon",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "host": "web-01",
   "features": { "logs": false, "docker": false }
 }

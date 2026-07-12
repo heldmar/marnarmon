@@ -8,4 +8,4 @@ Lightsail) via systemd.
 
 # Kept in lockstep with the released git tag (vX.Y.Z). The API surfaces it at
 # /health and as the FastAPI app version, so bump it in the same commit you tag.
-__version__ = "1.0.4"
+__version__ = "1.0.5"

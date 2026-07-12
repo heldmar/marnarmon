@@ -930,11 +930,15 @@ def _run(args: Sequence[str], timeout_seconds: float) -> str:
 
 
 # `docker stats` is streamed (see build_stats_args) and never exits on its own,
-# so we run it under a short fixed window — long enough for the daemon to emit a
-# couple of refresh frames (each ~500 ms) carrying a real CPU delta — then take
-# whatever it printed. Kept well under the config timeout so the hot path can't
-# stall on it.
-_STATS_STREAM_SECONDS = 2.5
+# so we run it under a short fixed window, then take whatever it printed. The
+# window must clear docker's WARM-UP: the daemon's first stats message carries an
+# unreliable CPU delta (computed against an empty/near-zero baseline), which the
+# CLI reprints for the first ~2 s as a constant, often-inflated value before the
+# second real sample settles it. `_last_stats_frame` takes the LAST complete
+# frame, so the window has to be comfortably past that warm-up or we'd return the
+# frozen warm-up number every poll. ~4.5 s gives 2–3× margin on a slow Pi while
+# staying well under the config timeout so the hot path can't stall on it.
+_STATS_STREAM_SECONDS = 4.5
 
 
 def _run_stats(args: Sequence[str], timeout_seconds: float) -> str:

@@ -4,6 +4,19 @@ All notable changes to MarNarMon are recorded here. Versions are git tags
 (`vX.Y.Z`); the host engine's `__version__` (surfaced at `/health`) tracks the
 tag. Update a deployed server with `sudo ./update.sh` (see the README).
 
+## [1.0.5] - 2026-07-12
+
+### Fixed
+- **Docker CPU still read a frozen `0.00`/near-zero after v1.0.4.** Two causes:
+  - *Engine:* the streamed-stats window (2.5 s) ended inside docker's warm-up —
+    the daemon's first stats message carries an unreliable CPU delta that the CLI
+    reprints for ~2 s before the real value settles. The window now streams 4.5 s
+    so the last frame is a live, settled sample.
+  - *Dashboard:* per-container and per-stack CPU were shown in **cores**, so a
+    container using 0.3% of a core displayed as `0.00 cores`. CPU is now shown as
+    a percentage (what `docker stats` reports), with two decimals below 1% so low,
+    live usage is visible and moves.
+
 ## [1.0.4] - 2026-07-12
 
 ### Fixed
