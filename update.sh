@@ -229,6 +229,19 @@ dash_is_portainer() {
     return 1
 }
 
+# If $1 is inside a git checkout of OUR repo, echo that checkout's root and
+# return 0; otherwise return 1. Guards against git walking up into an unrelated
+# parent repo: we require the checkout's `origin` to point at this project, so we
+# never run `git checkout <ref>` against a directory that isn't ours.
+_our_checkout_root() {
+    local top url
+    top="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || return 1
+    url="$(git -C "$top" remote get-url origin 2>/dev/null)" || return 1
+    local slug="${REPO_URL#*://}"; slug="${slug#*/}"; slug="${slug%.git}"  # heldmar/marnarmon
+    case "$url" in *"$slug"*|*"${slug##*/}.git"*) echo "$top"; return 0 ;; esac
+    return 1
+}
+
 # Move a git checkout to $TARGET (tag/branch/sha). No-op on non-git dirs.
 _git_to_target() {
     local d="$1"
@@ -279,25 +292,33 @@ update_dashboard() {
     local DC="docker compose"
     docker compose version >/dev/null 2>&1 || DC="docker-compose"
 
-    # Bring the SOURCE to the target ref. The dashboard IMAGE is built from
-    # source, so a bare `up --build` would rebuild the OLD code unless we first
-    # move the git checkout it builds from. Two places can be that checkout:
-    #   1. the compose directory itself      (`build: .`)
-    #   2. a separate build context it points at (`build: /path/to/clone`)
-    # docker compose config normalises every build to an absolute context path.
-    local updated_any=0
-    if git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
-        _git_to_target "$dir"; updated_any=1
-    fi
-    local ctx
+    # Bring the SOURCE the image builds from up to the target version. A bare
+    # `up --build` would otherwise rebuild the OLD code. For each build context
+    # docker resolves for this compose file (compose config normalises every
+    # build to an absolute context path), update it by its kind:
+    #   1. a checkout of THIS repo   -> git checkout the target ref (safe: we
+    #      verify the checkout's origin is our repo, never a parent/unrelated one)
+    #   2. a plain build dir         -> sync our dashboard/ source into it,
+    #      preserving that dir's own compose file and .env
+    local updated_any=0 ctx
     while IFS= read -r ctx; do
         [ -n "$ctx" ] || continue
-        if git -C "$ctx" rev-parse --git-dir >/dev/null 2>&1; then
-            _git_to_target "$ctx"; updated_any=1
+        local top; top="$(_our_checkout_root "$ctx" || true)"
+        if [ -n "$top" ]; then
+            _git_to_target "$top"; updated_any=1
+        elif [ -f "$ctx/Dockerfile" ]; then
+            info "Build dir is a plain source copy (not a git checkout of this repo)."
+            info "Syncing dashboard source $RESOLVED -> $ctx (its compose file + .env are preserved)."
+            if command -v rsync >/dev/null 2>&1; then
+                run "rsync -a --exclude='.git' --exclude='docker-compose.y*ml' --exclude='compose.y*ml' --exclude='.env' --exclude='.env.*' '$SRC/dashboard/' '$ctx/'"
+            else
+                run "sh -c 'cd \"$SRC/dashboard\" && find . -mindepth 1 -maxdepth 1 ! -name \".git\" ! -name \"docker-compose.*\" ! -name \"compose.*\" ! -name \".env*\" -exec cp -a {} \"$ctx/\" \\;'"
+            fi
+            updated_any=1
         fi
     done < <(cd "$dir" && $DC -f "$dcfile" config 2>/dev/null | awk '$1=="context:"{print $2}' | sort -u)
     [ "$updated_any" = 1 ] || \
-        warn "No git-tracked build source found for $dir — rebuilding from the current on-disk source (it may already be up to date, or is managed elsewhere)."
+        warn "No updatable build source found for $dir — rebuilding from the current on-disk source (it may already be current, use a prebuilt image, or be managed elsewhere)."
 
     # Preserve the existing compose project name so we recreate the SAME project
     # instead of forking a duplicate (matters for Portainer-created local stacks).
