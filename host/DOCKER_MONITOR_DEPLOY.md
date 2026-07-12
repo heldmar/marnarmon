@@ -232,6 +232,12 @@ docker stats --no-stream --format '{{.Name}} {{.MemUsage}}'   # non-zero MEM
 The dashboard's Memory gauge and per-container RAM meters populate on the next
 poll; the "memory cgroup disabled" banner disappears on its own.
 
+> **Note (CPU):** `--no-stream` is fine for the MEM spot-check above, but it
+> reports `0.00%` CPU for every container (a single sample has no interval to
+> diff). To eyeball real CPU manually, stream instead and read the second frame:
+> `docker stats --format '{{.Name}} {{.CPUPerc}}'` (Ctrl-C after it refreshes).
+> The engine does this internally as of v1.0.4, so the dashboard shows real CPU.
+
 ---
 
 ## Roll back (disable Docker Monitor)

@@ -28,7 +28,7 @@ dashboard adapts to (see `/health`).
 ```json
 {
   "service": "marnarmon",
-  "version": "0.1.0",
+  "version": "1.0.4",
   "host": "web-01",
   "features": { "logs": false, "docker": false }
 }
@@ -255,6 +255,12 @@ The dashboard renders this as a banner, so a down daemon is never a `5xx`.
 All values are read **live per request** — no docker history is stored (mirrors
 Server Logs). Every size is bytes; CPU is expressed as cores (`100%` of a
 `docker stats` CPU reading equals one full core).
+
+> **CPU is sampled by streaming `docker stats`, not `--no-stream`.** A single
+> `--no-stream` sample has no elapsed interval to diff against, so every
+> container reports `0.00%`. The engine instead streams for a short bounded
+> window and reads the last complete refresh frame, which carries a real CPU
+> delta (fixed in v1.0.4).
 
 ### `GET /docker/overview`
 
