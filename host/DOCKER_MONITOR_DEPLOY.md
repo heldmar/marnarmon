@@ -8,10 +8,15 @@ lives at `/opt/marnarmon/marnarmon`, config at `/etc/marnarmon/config.yml`, the
 API unit at `/etc/systemd/system/marnarmon-api.service`, and it runs as the
 unprivileged `marnarmon` user.
 
-> **Constraint:** on the Pi, `helder` has **no passwordless sudo**. Every
-> privileged step below is delivered as a **single copy-pasteable `sudo`
-> command** you run once and type your password for. Nothing here assumes
-> passwordless escalation.
+> **Constraint:** on the Pi, `helder` has **no passwordless sudo**. Each
+> privileged step below is delivered as a small script you **write to a file
+> first, then run with `sudo bash <file>`**, typing your password once at the
+> prompt. Do **not** pipe the script into `sudo` via a heredoc
+> (`sudo bash <<'EOF' … EOF`): that feeds the script to `sudo` on **stdin**,
+> which is the same channel `sudo` needs for the password prompt, so
+> password-sudo hangs/fails. Writing the file (as your normal user) and then
+> `sudo bash`-ing it keeps stdin free for the password. Each block self-cleans
+> the temp file; nothing is left behind.
 
 ---
 
@@ -51,8 +56,12 @@ untouched), enables Docker Monitor, restarts, and deletes the clone. It
 rewrites `config.yml` wholesale. Idempotent and self-cleaning; nothing is left
 behind on the server.
 
+First write the script to a file (runs as your normal user — no sudo yet):
+
 ```bash
-sudo bash -euo pipefail <<'EOF'
+cat > /tmp/marnar-enable.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
 REPO=https://github.com/heldmar/marnarmon.git
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 git clone --depth 1 "$REPO" "$TMP/repo"
@@ -107,6 +116,17 @@ echo "Host agent updated + Docker Monitor enabled."
 EOF
 ```
 
+Then run it with sudo (you'll be prompted for your password), and clean up:
+
+```bash
+sudo bash /tmp/marnar-enable.sh
+rm -f /tmp/marnar-enable.sh
+```
+
+> Re-running this is safe and is exactly how you **pick up updated host code**
+> (`docker.py`/`api.py`/`config.py`): it re-syncs the files and restarts. The
+> `usermod`/drop-in/config steps are idempotent.
+
 > **Do not use `sudo ./install.sh` to update a live install.** That installer is
 > a first-time provisioner — it rewrites `config.yml` from your prompt answers
 > and **regenerates the API token**, which would break the dashboard's auth. Use
@@ -147,12 +167,74 @@ is required after the group change.
 
 ---
 
+## Enable accurate memory stats (Raspberry Pi memory cgroup)
+
+**Symptom:** the dashboard shows RAM as **"n/a"** / hatched and containers report
+**0 B** of memory, while CPU and disk are correct.
+
+**Cause:** Raspberry Pi OS ships with the kernel **memory cgroup controller
+disabled** to save a little RAM. Without it, `docker stats` reports `MEM 0B / 0B`
+for every container, so there is nothing for the agent to read. Confirm with:
+
+```bash
+cat /sys/fs/cgroup/cgroup.controllers
+#   if the list has no "memory", the controller is off (CPU still works)
+```
+
+**Fix:** add two flags to the kernel command line and reboot. `cmdline.txt` **must
+stay a single line** — the script below appends to the first line and backs the
+file up first.
+
+```bash
+cat > /tmp/marnar-cgroup.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+F=/boot/firmware/cmdline.txt
+[ -f "$F" ] || F=/boot/cmdline.txt          # older Raspberry Pi OS layout
+cp -a "$F" "$F.bak.$(date +%s)"             # timestamped backup
+if grep -q 'cgroup_enable=memory' "$F"; then
+  echo "Already enabled — no change:"
+else
+  sed -i '1 s/$/ cgroup_enable=memory cgroup_memory=1/' "$F"  # append, keep 1 line
+  echo "Appended cgroup flags. New cmdline:"
+fi
+cat "$F"
+EOF
+sudo bash /tmp/marnar-cgroup.sh
+rm -f /tmp/marnar-cgroup.sh
+```
+
+Review the printed line (it must be **one** line), then reboot to apply:
+
+```bash
+sudo reboot
+```
+
+> ⚠️ **This reboots the Pi** — every service on it (Portainer, its stacks, the
+> dashboard, anything else) goes down for the duration of the reboot. Do it at an
+> approved, low-traffic time. Enabling the memory controller also costs a small,
+> fixed amount of kernel RAM (accounting overhead) — negligible on a 4 GB Pi.
+
+After it comes back, verify the controller is present and stats are real:
+
+```bash
+cat /sys/fs/cgroup/cgroup.controllers          # now includes "memory"
+docker stats --no-stream --format '{{.Name}} {{.MemUsage}}'   # non-zero MEM
+```
+
+The dashboard's Memory gauge and per-container RAM meters populate on the next
+poll; the "memory cgroup disabled" banner disappears on its own.
+
+---
+
 ## Roll back (disable Docker Monitor)
 
 Single command; reverses all of Option B. Idempotent.
 
 ```bash
-sudo bash -euo pipefail <<'EOF'
+cat > /tmp/marnar-disable.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
 # 1. Flip the config off.
 CFG=/etc/marnarmon/config.yml
 sed -i '/^docker:/,/^[^[:space:]#]/ s/^\(\s*enabled:\).*/\1 false/' "$CFG"
@@ -169,6 +251,8 @@ systemctl daemon-reload
 systemctl restart marnarmon-api.service
 echo "Docker Monitor disabled and docker-group access revoked."
 EOF
+sudo bash /tmp/marnar-disable.sh
+rm -f /tmp/marnar-disable.sh
 ```
 
 Confirm rollback: `curl -fsS -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8787/health`
