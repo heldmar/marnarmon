@@ -29,7 +29,7 @@ dashboard adapts to (see `/health`).
 {
   "service": "marnarmon",
   "version": "0.1.0",
-  "host": "pi-server",
+  "host": "web-01",
   "features": { "logs": false, "docker": false }
 }
 ```
@@ -42,7 +42,7 @@ than 3× the collection interval, else `"stale"`.
 ```json
 {
   "status": "ok",
-  "host": "pi-server",
+  "host": "web-01",
   "last_sample_ts": 1782331556,
   "last_sample_age_seconds": 12,
   "interval_minutes": 5,
@@ -90,7 +90,7 @@ Latest snapshot. Returns `503` if no sample has been collected yet.
       "percent": 53.81
     }
   ],
-  "host": "pi-server"
+  "host": "web-01"
 }
 ```
 
@@ -133,7 +133,7 @@ GET /metrics/history?window=24h
       { "ts": 1782331556, "used_bytes": 5491965952, "total_bytes": 10222313472, "percent": 53.81 }
     ]
   },
-  "host": "pi-server",
+  "host": "web-01",
   "window_minutes": 1440
 }
 ```
@@ -166,7 +166,7 @@ server-side for ~60s.
 
 ```json
 {
-  "host": "pi-server",
+  "host": "web-01",
   "sources": [
     { "unit": "kernel", "label": "Kernel" },
     { "unit": "nginx.service", "label": "Nginx" },
@@ -200,7 +200,7 @@ GET /logs?severity=errors&q=disk&window=24h&limit=100
 
 ```json
 {
-  "host": "pi-server",
+  "host": "web-01",
   "lines": [
     {
       "ts": 1782331556,
@@ -213,7 +213,7 @@ GET /logs?severity=errors&q=disk&window=24h&limit=100
       "source_label": "Nginx",
       "identifier": "nginx",
       "pid": "812",
-      "hostname": "pi-server",
+      "hostname": "web-01",
       "message": "connect() failed: No space left on device"
     }
   ],
@@ -267,12 +267,12 @@ expired.
 
 ```json
 {
-  "host": "pi-server",
+  "host": "web-01",
   "docker_ok": true,
   "error": null,
   "totals": {
     "cpu":  { "percent": 12.5, "used_cores": 0.5, "host_cores": 4 },
-    "mem":  { "percent": 41.2, "used_bytes": 1648361472, "total_bytes": 3997925376 },
+    "mem":  { "percent": 41.2, "used_bytes": 1648361472, "total_bytes": 3997925376, "available": true },
     "disk": {
       "percent": 18.4,
       "used_bytes": 1932735283,
@@ -302,6 +302,16 @@ Field notes:
   size of the filesystem backing docker (`statvfs` of `/`).
 - `totals.disk` is the sum of the docker `images` / `volumes` / `containers`
   buckets from the summary `system df` (each also surfaced individually).
+- `totals.mem.available` is a **heuristic** for whether memory accounting is
+  actually on: `false` when the host kernel's memory cgroup controller is
+  disabled, in which case `docker stats` reports `MemUsage=0` for every running
+  container. It is computed as `not (running_containers > 0 and total_mem_used
+  == 0)` — running containers always use *some* RAM, so an all-zero reading
+  means accounting is off (a well-known Raspberry Pi default; the Pi ships with
+  the memory cgroup off to save RAM). When `available` is `false`, the mem
+  `percent` / `used_bytes` read `0` and the dashboard shows an explanatory
+  banner instead of a misleading 0. Only present when `docker_ok` is `true`
+  (when it is `false`, `totals` is `null` as noted below).
 - `stats.net_rx_rate` / `stats.net_tx_rate` are a real **bytes/sec rate**, derived
   as the in-memory delta between successive `docker stats` snapshots (docker's
   NetIO is cumulative-since-start, so the API differences consecutive polls the
@@ -329,7 +339,7 @@ don't each shell out to `docker stats`.
 
 ```json
 {
-  "host": "pi-server",
+  "host": "web-01",
   "docker_ok": true,
   "error": null,
   "stacks": [
@@ -352,8 +362,8 @@ don't each shell out to `docker stats`.
           "state_raw": "running",
           "status": "Up 2 hours (healthy)",
           "health": "healthy",
-          "mem":  { "used_bytes": 268435456, "limit_bytes": 536870912, "percent": 50.0 },
-          "cpu":  { "used_cores": 0.12, "used_percent": 12.0, "limit_cores": 1.5, "percent": 8.0 },
+          "mem":  { "used_bytes": 268435456, "limit_bytes": 536870912, "percent": 50.0, "host_percent": 6.7 },
+          "cpu":  { "used_cores": 0.12, "used_percent": 12.0, "limit_cores": 1.5, "percent": 8.0, "host_percent": 3.0 },
           "disk": { "bytes": 725614592, "rw_bytes": 188743680, "volumes_bytes": 536870912, "local_volumes": 2 }
         }
       ]
@@ -376,7 +386,10 @@ Field notes and honest caveats:
 - **RAM meters work**: `mem.limit_bytes` and `mem.percent` are populated when the
   container has an explicit memory limit. A limit within ~1% of host RAM (or
   none) is treated as *unlimited*, so `limit_bytes` and `percent` are `null` and
-  the UI hatches the meter as "no limit".
+  the UI hatches the meter as "no limit". `mem.host_percent` is the container's
+  usage as a percentage of **total host RAM** (`used_bytes / host_total * 100`),
+  the share-of-host **fallback fill** the meter uses instead of hatching when
+  there is no limit; `null` only when the host RAM total is unknown/zero.
 - **CPU meters work**: `cpu.limit_cores` and `cpu.percent` (used ÷ limit) are
   populated when the container has a CPU limit, derived from a single batched
   `docker inspect` over all containers (`HostConfig.NanoCpus`, falling back to
@@ -385,7 +398,11 @@ Field notes and honest caveats:
   case the UI hatches the meter as "no limit" (mirroring the RAM no-limit case).
   If the inspect call fails for any reason the endpoint still returns 200 with
   the limits degraded to `null`. `cpu.used_cores` / `cpu.used_percent` (usage)
-  are always populated.
+  are always populated. `cpu.host_percent` is the container's usage as a
+  percentage of **all host cores** (`used_cores / host_cores * 100`) — the same
+  share-of-host **fallback fill** as `mem.host_percent`, used to fill the meter
+  when there is no CPU limit instead of hatching it; `null` only when the host
+  core count is unknown/zero.
 - **Per-container disk includes volumes**: `disk.rw_bytes` is the writable-layer
   size from `ps -s`; `disk.volumes_bytes` is the real on-disk size of the
   container's named volumes, joined from the batched `docker inspect` (which
@@ -413,7 +430,7 @@ GET /docker/logs?container=blog-wordpress-1&tail=500&since=10m
 
 ```json
 {
-  "host": "pi-server",
+  "host": "web-01",
   "container": "blog-wordpress-1",
   "lines": [
     { "ts": 1782331556, "message": "[core:notice] AH00094: Command line: 'apache2 -D FOREGROUND'" }

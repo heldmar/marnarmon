@@ -84,6 +84,33 @@ The installer is interactive. It will:
 
 Re-running `install.sh` is safe — it redeploys code and reapplies config.
 
+## Updating to a new release
+
+Releases are published as git tags (`vX.Y.Z`). Once installed, pull the latest
+release with the updater — it works on **any** server this is deployed to and
+never rewrites your config or regenerates the API token:
+
+```bash
+cd marnarmon && git pull            # get the latest update.sh itself
+sudo ./update.sh                    # update whatever is installed here
+```
+
+`update.sh` auto-detects what's present and updates it to the latest tag:
+
+- **Host agent** — re-syncs the Python package into `/opt/marnarmon`, updates the
+  virtualenv only if `requirements.txt` changed, and restarts the service.
+- **Dashboard** — rebuilds and redeploys the container. It handles a plain
+  Docker Compose checkout, and detects a Portainer-managed stack (which Portainer
+  redeploys itself — trigger its webhook with `--portainer-webhook <URL>`).
+
+Useful flags: `--engine` / `--dashboard` (update just one), `--edge` (track
+`main` instead of the latest tag), `--ref vX.Y.Z` (pin a version), `--dry-run`
+(preview). See `./update.sh --help`.
+
+> Unlike `install.sh` (a first-time provisioner that rewrites `config.yml` and
+> regenerates the token), `update.sh` is the safe way to update a live,
+> configured server.
+
 ### Layout
 
 ```

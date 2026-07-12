@@ -1,22 +1,28 @@
-# Docker Monitor — Pi deployment runbook
+# Docker Monitor — enable & operate
 
 How to enable (and roll back) the **Docker Monitor** feature on an
-**already-running** MarNarMon install on the Raspberry Pi.
+**already-running** MarNarMon install, on **any systemd Linux host** (cloud VM,
+bare metal, Raspberry Pi, …).
 
 The host agent runs under **systemd** (it is *not* itself containerized): code
 lives at `/opt/marnarmon/marnarmon`, config at `/etc/marnarmon/config.yml`, the
 API unit at `/etc/systemd/system/marnarmon-api.service`, and it runs as the
 unprivileged `marnarmon` user.
 
-> **Constraint:** on the Pi, `helder` has **no passwordless sudo**. Each
-> privileged step below is delivered as a small script you **write to a file
-> first, then run with `sudo bash <file>`**, typing your password once at the
-> prompt. Do **not** pipe the script into `sudo` via a heredoc
-> (`sudo bash <<'EOF' … EOF`): that feeds the script to `sudo` on **stdin**,
-> which is the same channel `sudo` needs for the password prompt, so
-> password-sudo hangs/fails. Writing the file (as your normal user) and then
-> `sudo bash`-ing it keeps stdin free for the password. Each block self-cleans
-> the temp file; nothing is left behind.
+> **Already installed and just want the latest code?** Use the updater instead
+> of the manual steps here: from a checkout of this repo,
+> `sudo ./update.sh --engine` pulls the latest release and restarts the service
+> (it never rewrites your config or token). This runbook is for the one-time
+> **enable/disable** of Docker Monitor. See [`../update.sh --help`](../update.sh).
+
+> **Running privileged steps.** Each privileged block below is delivered as a
+> small script you **write to a file first, then run with `sudo bash <file>`**.
+> If your host uses **password** sudo (not passwordless), do *not* pipe the
+> script into `sudo` via a heredoc (`sudo bash <<'EOF' … EOF`): that feeds the
+> script to `sudo` on **stdin**, the same channel `sudo` needs for the password
+> prompt, so it hangs. Writing the file first keeps stdin free for the password.
+> On a passwordless-sudo host either form works. Each block self-cleans its temp
+> file; nothing is left behind.
 
 ---
 
@@ -123,9 +129,10 @@ sudo bash /tmp/marnar-enable.sh
 rm -f /tmp/marnar-enable.sh
 ```
 
-> Re-running this is safe and is exactly how you **pick up updated host code**
-> (`docker.py`/`api.py`/`config.py`): it re-syncs the files and restarts. The
-> `usermod`/drop-in/config steps are idempotent.
+> Re-running this is safe and idempotent (the `usermod`/drop-in/config steps
+> no-op if already applied). But once Docker Monitor is enabled, the simpler way
+> to **pick up new releases** is `sudo ./update.sh --engine` — it pulls the
+> latest tag, re-syncs the code, updates venv deps if they changed, and restarts.
 
 > **Do not use `sudo ./install.sh` to update a live install.** That installer is
 > a first-time provisioner — it rewrites `config.yml` from your prompt answers
