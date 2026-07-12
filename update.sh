@@ -116,11 +116,11 @@ command -v git >/dev/null 2>&1 || die "git is required."
 # --------------------------------------------------------------------------- #
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 step "Fetching $REPO_URL"
-run "git clone --quiet '$REPO_URL' '$TMP/repo'"
+# The clone + checkout are read-only (throwaway temp dir), so we do them even
+# under --dry-run — that way the preview resolves the real target version and
+# source paths. Only system-mutating steps are gated by run()/--dry-run.
+git clone --quiet "$REPO_URL" "$TMP/repo" || die "git clone failed ($REPO_URL)."
 SRC="$TMP/repo"
-# Under --dry-run the clone was skipped; fall back to this checkout for reads so
-# the preview still works from the repo we're being run out of.
-[ -d "$SRC/host" ] || SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [ -n "$REF" ]; then
     TARGET="$REF"
@@ -134,8 +134,7 @@ else
         TARGET="origin/HEAD"
     fi
 fi
-[ "$DRY_RUN" = 1 ] || git -C "$SRC" checkout --quiet "$TARGET" 2>/dev/null \
-    || die "Ref not found: $TARGET"
+git -C "$SRC" checkout --quiet "$TARGET" 2>/dev/null || die "Ref not found: $TARGET"
 RESOLVED="$(git -C "$SRC" describe --tags --always 2>/dev/null || echo "$TARGET")"
 ok "Target version: ${BOLD}${RESOLVED}${RESET}"
 
@@ -226,6 +225,18 @@ dash_is_portainer() {
     return 1
 }
 
+# Move a git checkout to $TARGET (tag/branch/sha). No-op on non-git dirs.
+_git_to_target() {
+    local d="$1"
+    info "Updating source checkout: $d → $RESOLVED"
+    run "git -C '$d' fetch --quiet --tags origin"
+    run "git -C '$d' checkout --quiet '$TARGET'"
+    # On a branch (e.g. --edge → main) fast-forward to the remote tip.
+    if git -C "$d" symbolic-ref -q HEAD >/dev/null 2>&1; then
+        run "git -C '$d' pull --quiet --ff-only || true"
+    fi
+}
+
 update_dashboard() {
     step "Updating dashboard → $RESOLVED"
     command -v docker >/dev/null 2>&1 || die "docker not found — can't update the dashboard."
@@ -252,7 +263,7 @@ update_dashboard() {
     if [ -z "$dir" ] || [ ! -d "$dir" ]; then
         die "Could not locate the dashboard's compose directory. Pass --dashboard-dir /path/to/checkout (the folder holding docker-compose.yml, on a git checkout of this repo)."
     fi
-    info "Dashboard checkout: $dir"
+    info "Dashboard compose dir: $dir"
 
     local dcfile=""
     for f in docker-compose.yml docker-compose.yaml compose.yml compose.yaml; do
@@ -260,22 +271,38 @@ update_dashboard() {
     done
     [ -n "$dcfile" ] || die "No compose file in $dir."
 
-    # Bring the source to the target ref (only if it's a git checkout).
-    if git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
-        run "git -C '$dir' fetch --quiet --tags origin"
-        run "git -C '$dir' checkout --quiet '$TARGET'"
-        # If on a branch (e.g. --edge → main), fast-forward to the remote tip.
-        if git -C "$dir" symbolic-ref -q HEAD >/dev/null 2>&1; then
-            run "git -C '$dir' pull --quiet --ff-only || true"
-        fi
-    else
-        warn "$dir is not a git checkout — rebuilding from its current source."
-    fi
-
     # docker compose (v2) or docker-compose (v1)
     local DC="docker compose"
     docker compose version >/dev/null 2>&1 || DC="docker-compose"
-    run "$DC -f '$dcfile' up -d --build"
+
+    # Bring the SOURCE to the target ref. The dashboard IMAGE is built from
+    # source, so a bare `up --build` would rebuild the OLD code unless we first
+    # move the git checkout it builds from. Two places can be that checkout:
+    #   1. the compose directory itself      (`build: .`)
+    #   2. a separate build context it points at (`build: /path/to/clone`)
+    # docker compose config normalises every build to an absolute context path.
+    local updated_any=0
+    if git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+        _git_to_target "$dir"; updated_any=1
+    fi
+    local ctx
+    while IFS= read -r ctx; do
+        [ -n "$ctx" ] || continue
+        if git -C "$ctx" rev-parse --git-dir >/dev/null 2>&1; then
+            _git_to_target "$ctx"; updated_any=1
+        fi
+    done < <(cd "$dir" && $DC -f "$dcfile" config 2>/dev/null | awk '$1=="context:"{print $2}' | sort -u)
+    [ "$updated_any" = 1 ] || \
+        warn "No git-tracked build source found for $dir — rebuilding from the current on-disk source (it may already be up to date, or is managed elsewhere)."
+
+    # Preserve the existing compose project name so we recreate the SAME project
+    # instead of forking a duplicate (matters for Portainer-created local stacks).
+    local proj pflag=""
+    proj="$(docker inspect "$DASH_CONTAINER" \
+        --format '{{ index .Config.Labels "com.docker.compose.project" }}' 2>/dev/null || true)"
+    [ -n "$proj" ] && pflag="-p '$proj'"
+
+    run "$DC $pflag -f '$dcfile' up -d --build"
     ok "Dashboard rebuilt and redeployed."
 }
 
