@@ -11,6 +11,59 @@ consumes the same API.
 > host-side agent (this directory) and the React dashboard ([`dashboard/`](dashboard/),
 > shipped as a Docker container). The HTTP contract between them is [`API.md`](API.md).
 
+## The dashboard
+
+The dashboard has three sections, reachable from the icon rail on the left. The
+two optional ones (Server Logs, Docker) only appear when the host has them
+enabled. It ships with dark and light themes (toggle in the header); screenshots
+below use sample data and show the dark theme, with the light theme collapsed
+under each.
+
+### Server Resources
+
+The default view: at-a-glance gauges for CPU, memory, and each tracked disk,
+a strip of quick stats (network in/out, free memory, uptime), and time-series
+charts for CPU, memory, network throughput, and load average over a selectable
+window (1h / 6h / 24h / 7d).
+
+![Server Resources — gauges, quick stats, and history charts](docs/screenshots/dashboard-resources.png)
+
+<details><summary>Light theme</summary>
+
+![Server Resources (light theme)](docs/screenshots/dashboard-resources-light.png)
+
+</details>
+
+### Server Logs *(optional)*
+
+A friendly journal browser: full-text search, severity filter (Errors /
+Warnings / Info / Everything), a time range (presets or custom), and a source
+picker (systemd units + kernel). Rows are colour-coded by severity, and "Live"
+streams new lines as they arrive.
+
+![Server Logs — searchable, filterable systemd journal browser](docs/screenshots/dashboard-logs.png)
+
+<details><summary>Light theme</summary>
+
+![Server Logs (light theme)](docs/screenshots/dashboard-logs-light.png)
+
+</details>
+
+### Docker *(optional)*
+
+For Docker hosts: three host-pressure gauges (CPU / RAM / Disk consumed by all
+containers), summary stats (running/stopped, stacks, net I/O, 24h restarts), and
+per-Compose-stack cards with used-vs-limit RAM and CPU meters, a disk footprint
+meter, and a per-container live log drawer.
+
+![Docker — host-pressure gauges and per-stack container meters](docs/screenshots/dashboard-docker.png)
+
+<details><summary>Light theme</summary>
+
+![Docker (light theme)](docs/screenshots/dashboard-docker-light.png)
+
+</details>
+
 ## What it does
 
 - **Collector** — a oneshot Python script run by a systemd **timer** every *N*
