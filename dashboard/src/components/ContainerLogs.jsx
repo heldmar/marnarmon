@@ -59,16 +59,20 @@ export default function ContainerLogs({ open, container, onClose }) {
   );
 
   const lines = useMemo(() => {
+    // docker logs arrive oldest→newest; show newest on top so the most recent
+    // activity is immediately visible without scrolling.
     const all = poll.data?.lines || [];
     const q = search.trim().toLowerCase();
-    if (!q) return all;
-    return all.filter((l) => (l.message || "").toLowerCase().includes(q));
+    const filtered = q
+      ? all.filter((l) => (l.message || "").toLowerCase().includes(q))
+      : all;
+    return [...filtered].reverse();
   }, [poll.data, search]);
 
-  // Auto-scroll to the newest line while streaming.
+  // Newest line is on top, so pin to the top while streaming.
   useEffect(() => {
     if (live && termRef.current) {
-      termRef.current.scrollTop = termRef.current.scrollHeight;
+      termRef.current.scrollTop = 0;
     }
   }, [lines, live]);
 

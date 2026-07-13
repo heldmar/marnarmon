@@ -4,6 +4,23 @@ All notable changes to MarNarMon are recorded here. Versions are git tags
 (`vX.Y.Z`); the host engine's `__version__` (surfaced at `/health`) tracks the
 tag. Update a deployed server with `sudo ./update.sh` (see the README).
 
+## [1.0.6] - 2026-07-13
+
+### Fixed
+- **Docker container log drawer now shows newest lines on top.** `docker logs`
+  returns oldest→newest and the drawer auto-scrolled to the bottom, so the most
+  recent activity sat off-screen. The drawer now lists newest-first and pins to
+  the top while streaming, matching the Server Logs view.
+- **Docker CLI config warning leaked into the log drawer.** On hosts where
+  `~/.docker/config.json` exists but is root-owned (a leftover from an earlier
+  `sudo docker …`), the CLI printed `WARNING: Error loading config file: …
+  permission denied` to stderr on every call, and the log endpoint (which merges
+  a container's stderr into log output) surfaced it as a fake log line. The
+  engine now runs every `docker` command with `DOCKER_CONFIG` pointed at its own
+  readable directory, so the warning is never emitted — on any host, with no
+  per-server file fix required. As a safeguard, docker's own CLI diagnostics are
+  also filtered out of container log output.
+
 ## [1.0.5] - 2026-07-12
 
 ### Fixed

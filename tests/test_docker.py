@@ -617,6 +617,22 @@ def test_logs_wrapper_stderr_is_content(tmp_path=None):
         os.environ.pop("FAKE_DOCKER_LOGS_STDERR", None)
 
 
+def test_strip_docker_cli_noise():
+    """docker's own CLI diagnostics on stderr (e.g. the root-owned config-file
+    warning) must be dropped, while real log lines — even ones containing the
+    word 'warning' — pass through untouched."""
+    raw = (
+        "WARNING: Error loading config file: open /home/marnarmon/.docker/config.json: permission denied\n"
+        "2024-01-02T03:04:05Z app started\n"
+        "2024-01-02T03:04:06Z warning: disk almost full\n"
+    )
+    out = D._strip_docker_cli_noise(raw)
+    check("cli warning dropped", "Error loading config file" not in out)
+    check("real log kept", "app started" in out)
+    check("real 'warning' line kept", "disk almost full" in out)
+    check("empty passthrough", D._strip_docker_cli_noise("") == "")
+
+
 def test_logs_wrapper_hard_error(tmp_path=None):
     """rc!=0 AND no stdout (e.g. 'No such container') is a hard error."""
     import tempfile

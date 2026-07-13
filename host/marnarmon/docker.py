@@ -909,6 +909,51 @@ def _rfc3339_to_epoch(stamp: str) -> Optional[int]:
 # --------------------------------------------------------------------------- #
 # I/O wrappers (thin)
 # --------------------------------------------------------------------------- #
+# The `docker` CLI reads ~/.docker/config.json at startup. On hosts where that
+# file exists but is owned by root (a leftover from an earlier `sudo docker …`),
+# the service user can't read it and the CLI prints
+#   WARNING: Error loading config file: open …/.docker/config.json: permission denied
+# to STDERR on *every* invocation. That's harmless to functionality, but
+# `_run_logs` intentionally merges stderr into log output (a container's own
+# stderr is real log content), so the warning leaks into the log drawer as a
+# fake line. Point DOCKER_CONFIG at our own empty, readable directory so the CLI
+# never touches the root-owned file and never emits the warning — on any host,
+# with no per-server file-permission fix required.
+# Cache only the isolated config-dir PATH (created once), not a whole env
+# snapshot — the env is rebuilt from the live os.environ on every call so any
+# other environment change still propagates to the subprocess.
+_DOCKER_CONFIG_DIR: Optional[str] = None
+_ENV_LOCK = threading.Lock()
+
+
+def _docker_config_dir() -> Optional[str]:
+    global _DOCKER_CONFIG_DIR
+    if _DOCKER_CONFIG_DIR is not None:
+        return _DOCKER_CONFIG_DIR
+    with _ENV_LOCK:
+        if _DOCKER_CONFIG_DIR is None:
+            import tempfile
+
+            cfg_dir = os.path.join(tempfile.gettempdir(), "marnarmon-docker")
+            try:
+                os.makedirs(cfg_dir, exist_ok=True)
+                _DOCKER_CONFIG_DIR = cfg_dir
+            except OSError:
+                _DOCKER_CONFIG_DIR = ""  # sentinel: creation failed, don't retry
+    return _DOCKER_CONFIG_DIR or None
+
+
+def _docker_env() -> Dict[str, str]:
+    env = dict(os.environ)
+    # Respect an explicit operator-set DOCKER_CONFIG; otherwise point the CLI at
+    # our own readable dir so it never reads a root-owned ~/.docker/config.json.
+    if not env.get("DOCKER_CONFIG"):
+        cfg_dir = _docker_config_dir()
+        if cfg_dir:
+            env["DOCKER_CONFIG"] = cfg_dir
+    return env
+
+
 def _run(args: Sequence[str], timeout_seconds: float) -> str:
     try:
         proc = subprocess.run(
@@ -917,6 +962,7 @@ def _run(args: Sequence[str], timeout_seconds: float) -> str:
             text=True,
             timeout=timeout_seconds,
             check=False,
+            env=_docker_env(),
         )
     except FileNotFoundError as exc:
         raise DockerError("docker CLI not found on this host") from exc
@@ -959,6 +1005,7 @@ def _run_stats(args: Sequence[str], timeout_seconds: float) -> str:
             text=True,
             timeout=window,
             check=False,
+            env=_docker_env(),
         )
     except FileNotFoundError as exc:
         raise DockerError("docker CLI not found on this host") from exc
@@ -992,6 +1039,7 @@ def _run_logs(args: Sequence[str], timeout_seconds: float) -> str:
             text=True,
             timeout=timeout_seconds,
             check=False,
+            env=_docker_env(),
         )
     except FileNotFoundError as exc:
         raise DockerError("docker CLI not found on this host") from exc
@@ -1003,7 +1051,29 @@ def _run_logs(args: Sequence[str], timeout_seconds: float) -> str:
         detail = (proc.stderr or "").strip().splitlines()
         msg = detail[-1] if detail else f"docker logs exited {proc.returncode}"
         raise DockerError(f"docker logs failed: {msg}")
-    return (proc.stdout or "") + (proc.stderr or "")
+    # stderr carries the container's own stderr stream (real log content), but on
+    # a broken host it can also carry the docker CLI's own startup diagnostics.
+    # Drop those so a CLI warning never masquerades as a container log line;
+    # everything else passes through untouched. Belt-and-suspenders alongside the
+    # DOCKER_CONFIG isolation above.
+    stderr = _strip_docker_cli_noise(proc.stderr or "")
+    return (proc.stdout or "") + stderr
+
+
+# docker CLI's own diagnostics on stderr — not container output. Matched
+# conservatively (anchored to the CLI's exact prefixes) so real log lines that
+# merely contain the word "warning" are never dropped.
+_CLI_NOISE_RE = re.compile(
+    r"^(?:WARNING: Error loading config file|"
+    r"WARNING: Your kernel does not support)",
+)
+
+
+def _strip_docker_cli_noise(text: str) -> str:
+    if not text:
+        return text
+    kept = [ln for ln in text.splitlines(keepends=True) if not _CLI_NOISE_RE.match(ln)]
+    return "".join(kept)
 
 
 # --------------------------------------------------------------------------- #
